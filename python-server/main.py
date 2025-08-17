@@ -64,7 +64,7 @@ async def process_pdf(file: UploadFile = File(...)):
     print("[DEBUG] Sending PDF to Java backend for chapter headings...")
     start = time.time()
     with open(tmp_path, "rb") as pdf_file:
-        java_url = "http://localhost:8080/get/pdf-info/detect-chapter-headings"
+        java_url = "https://dependable-expression-production-3af1.up.railway.app/get/pdf-info/detect-chapter-headings"
         response = requests.post(java_url, files={"file": (file.filename, pdf_file, file.content_type)})
         headings = response.json()
     print("[DEBUG] Received chapter headings from Java backend.")
