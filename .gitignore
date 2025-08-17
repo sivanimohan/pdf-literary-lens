@@ -30,15 +30,6 @@ logs/
 
 # Compiled class files
 *.class
-
-# Package Files
-*.jar
-*.war
-*.ear
-*.zip
-*.tar.gz
-*.rar
-
 # A temporary directory for tests
 /tmp/
 
