@@ -1,0 +1,59 @@
+Detailed Guide: Hosting FastAPI PDF Analysis Server on Railway
+
+1. Prepare Your Project
+- Ensure your project has:
+  - main.py (your FastAPI app)
+  - requirements.txt (all dependencies listed)
+  - .env (with your Gemini API key, but do not commit this file)
+  - .gitignore (should include .env)
+
+Example requirements.txt:
+fastapi
+uvicorn
+requests
+google-generativeai
+PyPDF2
+python-dotenv
+
+2. Push Your Code to GitHub
+- Initialize git if not already:
+  git init
+  git add .
+  git commit -m "Initial commit"
+  git remote add origin <your-github-repo-url>
+  git push -u origin master
+
+3. Create a Railway Project
+- Go to https://railway.app/ and sign in.
+- Click "New Project" > "Deploy from GitHub repo".
+- Select your repository.
+
+4. Configure Environment Variables
+- In Railway dashboard, go to your project.
+- Click "Variables" and add:
+  GEMINI_API_KEY=<your-gemini-api-key>
+
+5. Set Up the Start Command
+- In Railway, go to "Settings" > "Deployments".
+- Set the start command to:
+  uvicorn main:app --host 0.0.0.0 --port 8000
+
+6. Deploy
+- Railway will automatically install dependencies from requirements.txt and start your app.
+- Wait for deployment to finish.
+
+7. Test Your API
+- Railway will provide a public URL (e.g., https://your-app.up.railway.app).
+- Test your endpoint:
+  curl -X POST "https://your-app.up.railway.app/process-pdf" -F "file=@yourfile.pdf"
+
+8. (Optional) Add Java Backend
+- If you need the Java backend, host it separately (e.g., on Railway or another service).
+- Update the Java endpoint URL in your Python code to the public URL.
+
+9. Security & Maintenance
+- Never commit .env or secrets to git.
+- Use Railway’s environment variables for secrets.
+- Monitor logs and usage in Railway dashboard.
+
+Let me know if you need help with any step or want a sample requirements.txt or .env template!
