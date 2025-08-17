@@ -18,8 +18,9 @@ import org.springframework.stereotype.Service;
 @Service
 public class PdfHeadingDetectionService {
     private static final Pattern PAGE_LABEL_PATTERN = Pattern.compile("^page0*\\d+$", Pattern.CASE_INSENSITIVE);
+    // Simplified regex: only matches generic heading patterns, not specific chapter titles
     private static final Pattern HEADING_REGEX = Pattern.compile(
-        "^(CHAPTER|SECTION|PART|UNIT)\\s+([0-9]+|[IVXLCDM]+)(\\s*[:\\-].*)?$",
+        "^(CHAPTER|SECTION|PART|UNIT)\\s+([0-9]+|[IVXLCDM]+)?(\\s*[:\\-].*)?$",
         Pattern.CASE_INSENSITIVE
     );
     private static final String[] EXTRA_KEYWORDS = {
@@ -89,6 +90,7 @@ public class PdfHeadingDetectionService {
                     if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
                         float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
                         headings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
+                        System.out.println("[DEBUG] Outline Heading Detected: '" + title + "' on page " + pageNum);
                     }
                     current = current.getNextSibling();
                 }
@@ -132,6 +134,7 @@ public class PdfHeadingDetectionService {
                                 whitespaceAbove, customKeywords,
                                 (count[0] > 0 ? avgFontSize[0] / count[0] : 14));
                         headings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
+                        System.out.println("[DEBUG] Text Heading Detected: '" + line + "' on page " + page);
                     }
                     lastY = y;
                     lastPage = page;
@@ -146,6 +149,11 @@ public class PdfHeadingDetectionService {
             }
         }
         headings.sort((a, b) -> Float.compare(b.getHeadingScore(), a.getHeadingScore()));
+        // Debug: print all headings after sorting
+        System.out.println("[DEBUG] All Detected Headings (sorted):");
+        for (Heading h : headings) {
+            System.out.println("[DEBUG] '" + h.getText() + "' on page " + h.getPage() + " (score: " + h.getHeadingScore() + ")");
+        }
         return headings;
     }
 
@@ -174,26 +182,10 @@ public class PdfHeadingDetectionService {
 
     private boolean isProbableHeadingUniversal(String text, float fontSize, float yPos, float pageHeight,
                                       float whitespaceAbove, List<String> customKeywords, float avgFont, boolean isBold) {
-        if (text == null || text.isEmpty()) return false;
-        String cleaned = text.trim();
-        if (PAGE_LABEL_PATTERN.matcher(cleaned).matches()) return false;
-        if (HEADING_REGEX.matcher(cleaned.toUpperCase()).matches()) return true;
-        for (String kw : EXTRA_KEYWORDS) {
-            if (cleaned.equalsIgnoreCase(kw) || cleaned.toLowerCase().startsWith(kw + " ")) return true;
-        }
-        if (customKeywords != null) {
-            for (String kw : customKeywords) {
-                if (cleaned.toLowerCase().contains(kw.toLowerCase())) return true;
-            }
-        }
-    // Universal heading heuristics (relaxed)
-    if (cleaned.equals(cleaned.toUpperCase()) && cleaned.split("\\s+").length <= 14 && cleaned.length() > 2) return true;
-    if ((isBold || fontSize >= avgFont) && yPos < pageHeight * 0.50) return true;
-    if (whitespaceAbove > 8 && (fontSize >= avgFont - 1 || isBold)) return true;
-    if (fontSize >= avgFont + 2) return true;
-    if (cleaned.matches("^[A-Z][A-Za-z0-9 ,:;\\-]{0,80}$") && yPos < pageHeight * 0.60) return true;
-    if (cleaned.matches("^(APPENDIX|GLOSSARY|BIBLIOGRAPHY|INDEX|REFERENCES|ACKNOWLEDGMENTS?)($|[ .:,-])")) return true;
-    return false;
+    if (text == null || text.isEmpty()) return false;
+    String cleaned = text.trim();
+    if (PAGE_LABEL_PATTERN.matcher(cleaned).matches()) return false;
+    return HEADING_REGEX.matcher(cleaned.toUpperCase()).matches();
     }
 
     private float scoreHeading(String text, float fontSize, float yPos, float pageHeight,
