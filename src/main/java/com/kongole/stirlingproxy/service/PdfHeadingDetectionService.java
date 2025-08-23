@@ -90,7 +90,7 @@ public class PdfHeadingDetectionService {
                     if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
                         float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
                         headings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
-                        System.out.println("[DEBUG] Outline Heading Detected: '" + title + "' on page " + pageNum);
+                        // System.out.println("[DEBUG] Outline Heading Detected: '" + title + "' on page " + pageNum); // Removed excessive debug logging
                     }
                     current = current.getNextSibling();
                 }
@@ -134,7 +134,7 @@ public class PdfHeadingDetectionService {
                                 whitespaceAbove, customKeywords,
                                 (count[0] > 0 ? avgFontSize[0] / count[0] : 14));
                         headings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
-                        System.out.println("[DEBUG] Text Heading Detected: '" + line + "' on page " + page);
+                        // System.out.println("[DEBUG] Text Heading Detected: '" + line + "' on page " + page); // Removed excessive debug logging
                     }
                     lastY = y;
                     lastPage = page;
@@ -150,9 +150,9 @@ public class PdfHeadingDetectionService {
         }
         headings.sort((a, b) -> Float.compare(b.getHeadingScore(), a.getHeadingScore()));
         // Debug: print all headings after sorting
-        System.out.println("[DEBUG] All Detected Headings (sorted):");
+    // System.out.println("[DEBUG] All Detected Headings (sorted):"); // Removed excessive debug logging
         for (Heading h : headings) {
-            System.out.println("[DEBUG] '" + h.getText() + "' on page " + h.getPage() + " (score: " + h.getHeadingScore() + ")");
+            // System.out.println("[DEBUG] '" + h.getText() + "' on page " + h.getPage() + " (score: " + h.getHeadingScore() + ")"); // Removed excessive debug logging
         }
         return headings;
     }
