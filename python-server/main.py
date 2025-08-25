@@ -16,23 +16,10 @@ genai.configure(api_key=GEMINI_API_KEY)
 app = FastAPI()
 
 async def get_summaries(model, chapter_text, idx):
-    short_summary_text = "Summary could not be generated."
-    long_summary_text = "Summary could not be generated."
-    start_summary = time.time()
-    try:
-        short_summary_prompt = f"Summarize the following chapter in 2 sentences:\n{chapter_text}"
-        short_summary = await asyncio.to_thread(model.generate_content, short_summary_prompt)
-        short_summary_text = short_summary.text.strip()
-    except Exception as e:
-        print(f"[ERROR] Could not generate short summary for chapter {idx+1}: {e}")
-    try:
-        long_summary_prompt = f"Write a detailed summary of the following chapter:\n{chapter_text}"
-        long_summary = await asyncio.to_thread(model.generate_content, long_summary_prompt)
-        long_summary_text = long_summary.text.strip()
-    except Exception as e:
-        print(f"[ERROR] Could not generate long summary for chapter {idx+1}: {e}")
-    print(f"[TIME] Gemini summaries for chapter {idx+1}: {time.time() - start_summary:.2f} seconds")
-    return short_summary_text, long_summary_text
+    # --- All chapter text logic commented out ---
+    # if chapter_text:
+    #     # Any logic using chapter_text would go here
+    return None, None
 
 @app.post("/process-pdf")
 async def process_pdf(file: UploadFile = File(...)):
@@ -56,7 +43,7 @@ async def process_pdf(file: UploadFile = File(...)):
     print("[DEBUG] Calling Gemini for TOC extraction...")
     start = time.time()
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.5-pro")
+    model = genai.GenerativeModel("gemini-2.5-flash-lite")
     toc_prompt = (
         "You are an expert in book structure extraction. "
         "Given the text from the first 15 pages of a book, extract a detailed and accurate table of contents. "
