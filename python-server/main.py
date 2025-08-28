@@ -7,6 +7,7 @@ import os
 from dotenv import load_dotenv
 import time
 import asyncio
+import json
 
 load_dotenv()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
