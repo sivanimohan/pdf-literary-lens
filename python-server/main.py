@@ -24,23 +24,25 @@ async def get_summaries(model, chapter_text, idx):
 @app.post("/process-pdf")
 async def process_pdf(file: UploadFile = File(...)):
     start_total = time.time()
-    print("[DEBUG] Starting PDF upload and save...")
+    log_buffer = []
+    log_buffer.append("[DEBUG] Starting PDF upload and save...")
     start = time.time()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
-    print(f"[DEBUG] PDF saved to {tmp_path}")
-    print(f"[TIME] PDF upload and save: {time.time() - start:.2f} seconds")
+    log_buffer.append(f"[DEBUG] PDF saved to {tmp_path}")
+    log_buffer.append(f"[TIME] PDF upload and save: {time.time() - start:.2f} seconds")
 
-    print("[DEBUG] Extracting text from first 15 pages...")
+    log_buffer.append("[DEBUG] Extracting text from first 15 pages...")
     start = time.time()
     reader = PdfReader(tmp_path)
     num_pages = min(15, len(reader.pages))
     extracted_text = "\n".join([reader.pages[i].extract_text() or "" for i in range(num_pages)])
-    print(f"[DEBUG] Extracted text from {num_pages} pages.")
-    print(f"[TIME] Text extraction (first 15 pages): {time.time() - start:.2f} seconds")
+    log_buffer.append(f"[DEBUG] Extracted text from {num_pages} pages.")
+    log_buffer.append(f"[TIME] Text extraction (first 15 pages): {time.time() - start:.2f} seconds")
+    log_buffer.append("[LOG] Extracted text (first 15 pages):\n" + extracted_text)
 
-    print("[DEBUG] Calling Gemini for TOC extraction...")
+    log_buffer.append("[DEBUG] Calling Gemini for TOC extraction...")
     start = time.time()
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-2.5-flash-lite")
@@ -53,22 +55,24 @@ async def process_pdf(file: UploadFile = File(...)):
     )
     toc_result = model.generate_content(toc_prompt)
     toc = toc_result.text
-    print("[DEBUG] Gemini TOC extraction complete.")
-    print(f"[TIME] Gemini TOC extraction: {time.time() - start:.2f} seconds")
+    log_buffer.append("[LOG] Gemini TOC prompt:\n" + toc_prompt)
+    log_buffer.append("[LOG] Gemini TOC output:\n" + toc)
+    log_buffer.append("[DEBUG] Gemini TOC extraction complete.")
+    log_buffer.append(f"[TIME] Gemini TOC extraction: {time.time() - start:.2f} seconds")
 
     import json
     import os
-    print("[DEBUG] Sending PDF to Java backend for chapter headings...")
+    log_buffer.append("[DEBUG] Sending PDF to Java backend for chapter headings...")
     start = time.time()
     with open(tmp_path, "rb") as pdf_file:
         java_url = "https://dependable-expression-production-3af1.up.railway.app/get/pdf-info/detect-chapter-headings"
         response = requests.post(java_url, files={"file": (file.filename, pdf_file, file.content_type)})
         headings = response.json()
-    print("[DEBUG] Received chapter headings from Java backend.")
-    print(f"[TIME] Java backend chapter headings: {time.time() - start:.2f} seconds")
+    log_buffer.append("[DEBUG] Received chapter headings from Java backend.")
+    log_buffer.append(f"[TIME] Java backend chapter headings: {time.time() - start:.2f} seconds")
 
     detected_path = os.path.join(os.path.dirname(__file__), "..", "detected_headings.json")
-    print(f"[DEBUG] Saving detected headings to {detected_path}")
+    log_buffer.append(f"[DEBUG] Saving detected headings to {detected_path}")
     with open(detected_path, "w", encoding="utf-8") as f:
         json.dump(headings, f, ensure_ascii=False, indent=2)
 
@@ -92,12 +96,14 @@ async def process_pdf(file: UploadFile = File(...)):
         except Exception:
             return {}
 
-    print("[DEBUG] Calling Gemini for book metadata and TOC...")
+    log_buffer.append("[LOG] Gemini book metadata prompt:\n" + prompt1)
+    log_buffer.append("[DEBUG] Calling Gemini for book metadata and TOC...")
     start = time.time()
     result1 = model.generate_content(prompt1)
     book_info = parse_gemini_json(result1.text)
-    print("[DEBUG] Gemini book metadata extraction complete.")
-    print(f"[TIME] Gemini book metadata extraction: {time.time() - start:.2f} seconds")
+    log_buffer.append("[LOG] Gemini book metadata output:\n" + result1.text)
+    log_buffer.append("[DEBUG] Gemini book metadata extraction complete.")
+    log_buffer.append(f"[TIME] Gemini book metadata extraction: {time.time() - start:.2f} seconds")
 
     # --- Gemini Prompt 2: Match expected chapters to PDF headings ---
     # Prepare variables for prompt
@@ -118,12 +124,14 @@ async def process_pdf(file: UploadFile = File(...)):
         "- If no page found, use 0 as page_start\n"
         "- Return complete JSON array with all chapters"
     )
-    print("[DEBUG] Calling Gemini for chapter matching...")
+    log_buffer.append("[LOG] Gemini chapter matching prompt:\n" + prompt2)
+    log_buffer.append("[DEBUG] Calling Gemini for chapter matching...")
     start = time.time()
     result2 = model.generate_content(prompt2)
     matched_chapters = parse_gemini_json(result2.text)
-    print("[DEBUG] Gemini chapter matching complete.")
-    print(f"[TIME] Gemini chapter matching: {time.time() - start:.2f} seconds")
+    log_buffer.append("[LOG] Gemini chapter matching output:\n" + result2.text)
+    log_buffer.append("[DEBUG] Gemini chapter matching complete.")
+    log_buffer.append(f"[TIME] Gemini chapter matching: {time.time() - start:.2f} seconds")
 
     # Try to parse the first 15 pages text as JSON if possible, else keep as string
     try:
@@ -194,9 +202,13 @@ async def process_pdf(file: UploadFile = File(...)):
         "authors": cleaned_json.get("authors", []),
         "toc": cleaned_json.get("toc", [])
     }
-    print(f"[DEBUG] Saving final minimal JSON to {final_json_path}")
+    log_buffer.append(f"[DEBUG] Saving final minimal JSON to {final_json_path}")
     with open(final_json_path, "w", encoding="utf-8") as f:
         json.dump(final_json, f, ensure_ascii=False, indent=2)
-    print(f"[TIME] Total workflow: {time.time() - start_total:.2f} seconds")
-    print("[DEBUG] Workflow complete. Returning response.")
+    log_buffer.append(f"[TIME] Total workflow: {time.time() - start_total:.2f} seconds")
+    log_buffer.append("[DEBUG] Workflow complete. Returning response.")
+    # Write all logs to a single file at the end
+    log_path = os.path.join(os.path.dirname(__file__), "..", "detailed_log.txt")
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        log_file.write("\n\n".join(log_buffer))
     return final_json
