@@ -55,8 +55,9 @@ public class PdfHeadingDetectionService {
     }
 
     public List<Heading> detectHeadings(InputStream pdfStream, List<String> customKeywords) throws Exception {
-        List<Heading> headings = new ArrayList<>();
-        try (PDDocument document = PDDocument.load(pdfStream)) {
+    List<Heading> headings = new ArrayList<>();
+    List<String> logs = new ArrayList<>();
+    try (PDDocument document = PDDocument.load(pdfStream)) {
             PDDocumentOutline outline = document.getDocumentCatalog().getDocumentOutline();
             if (outline != null) {
                 PDOutlineItem current = outline.getFirstChild();
@@ -86,11 +87,12 @@ public class PdfHeadingDetectionService {
                         }
                     } catch (Exception e) {
                         pageNum = -1;
+                        logs.add("[ERROR] Failed to resolve outline page for title '" + title + "': " + e.getMessage());
                     }
                     if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
                         float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
                         headings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
-                        // System.out.println("[DEBUG] Outline Heading Detected: '" + title + "' on page " + pageNum); // Removed excessive debug logging
+                        logs.add("[HEADING] Outline Heading Detected: '" + title + "' on page " + pageNum);
                     }
                     current = current.getNextSibling();
                 }
@@ -134,7 +136,7 @@ public class PdfHeadingDetectionService {
                                 whitespaceAbove, customKeywords,
                                 (count[0] > 0 ? avgFontSize[0] / count[0] : 14));
                         headings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
-                        // System.out.println("[DEBUG] Text Heading Detected: '" + line + "' on page " + page); // Removed excessive debug logging
+                        logs.add("[HEADING] Text Heading Detected: '" + line + "' on page " + page);
                     }
                     lastY = y;
                     lastPage = page;
@@ -145,14 +147,21 @@ public class PdfHeadingDetectionService {
 
             // If still empty, always run OCR fallback
             if (headings.isEmpty()) {
+                logs.add("[INFO] No headings detected by outline/text, running OCR fallback.");
                 headings.addAll(detectHeadingsWithOCR(document, customKeywords));
             }
         }
         headings.sort((a, b) -> Float.compare(b.getHeadingScore(), a.getHeadingScore()));
-        // Debug: print all headings after sorting
-    // System.out.println("[DEBUG] All Detected Headings (sorted):"); // Removed excessive debug logging
+        logs.add("[INFO] All Detected Headings (sorted):");
         for (Heading h : headings) {
-            // System.out.println("[DEBUG] '" + h.getText() + "' on page " + h.getPage() + " (score: " + h.getHeadingScore() + ")"); // Removed excessive debug logging
+            logs.add("[HEADING] '" + h.getText() + "' on page " + h.getPage() + " (score: " + h.getHeadingScore() + ")");
+        }
+        // Write all logs to a single file at the end
+        try {
+            java.nio.file.Path logPath = java.nio.file.Paths.get("detailed_java_log.txt");
+            java.nio.file.Files.write(logPath, logs, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            // If logging fails, do nothing (avoid crashing main logic)
         }
         return headings;
     }
