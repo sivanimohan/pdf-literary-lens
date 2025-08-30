@@ -1,0 +1,69 @@
+[
+  {
+    "File Name": "cri.pdf",
+    "book_title": "The Crisis of the Modern World",
+    "authors": ["Rene Guenon"],
+    "toc": [
+      {
+        "chapter_numerical_number": null,
+        "chapter_full_title": "Editorial Note",
+        "page_start": 11
+      },
+      {
+        "chapter_numerical_number": null,
+        "chapter_full_title": "Preface",
+        "page_start": 1
+      },
+      {
+        "chapter_numerical_number": 1,
+        "chapter_full_title": "The Dark Age",
+        "page_start": 7
+      },
+      {
+        "chapter_numerical_number": 2,
+        "chapter_full_title": "The Opposition Between East and West",
+        "page_start": 21
+      },
+      {
+        "chapter_numerical_number": 3,
+        "chapter_full_title": "Knowledge and Action",
+        "page_start": 33
+      },
+      {
+        "chapter_numerical_number": 4,
+        "chapter_full_title": "Sacred and Profane Science",
+        "page_start": 42
+      },
+      {
+        "chapter_numerical_number": 5,
+        "chapter_full_title": "Individualism",
+        "page_start": 55
+      },
+      {
+        "chapter_numerical_number": 6,
+        "chapter_full_title": "The Social Chaos",
+        "page_start": 69
+      },
+      {
+        "chapter_numerical_number": 7,
+        "chapter_full_title": "A Material Civilization",
+        "page_start": 81
+      },
+      {
+        "chapter_numerical_number": 8,
+        "chapter_full_title": "Western Encroachment",
+        "page_start": 97
+      },
+      {
+        "chapter_numerical_number": 9,
+        "chapter_full_title": "Some Conclusions",
+        "page_start": 107
+      },
+      {
+        "chapter_numerical_number": null,
+        "chapter_full_title": "Index",
+        "page_start": 119
+      }
+    ]
+  }
+]

@@ -54,116 +54,124 @@ public class PdfHeadingDetectionService {
         public float getHeadingScore() { return headingScore; }
     }
 
-    public List<Heading> detectHeadings(InputStream pdfStream, List<String> customKeywords) throws Exception {
-    List<Heading> headings = new ArrayList<>();
-    List<String> logs = new ArrayList<>();
-    try (PDDocument document = PDDocument.load(pdfStream)) {
-            PDDocumentOutline outline = document.getDocumentCatalog().getDocumentOutline();
-            if (outline != null) {
-                PDOutlineItem current = outline.getFirstChild();
-                while (current != null) {
-                    String title = current.getTitle();
-                    int pageNum = -1;
-                    try {
-                        if (current.getDestination() != null) {
-                            if (current.getDestination() instanceof PDPageDestination) {
-                                PDPageDestination pd = (PDPageDestination) current.getDestination();
-                                if (pd.getPage() != null) {
-                                    pageNum = document.getPages().indexOf(pd.getPage()) + 1;
-                                } else if (pd.getPageNumber() >= 0) {
-                                    pageNum = pd.getPageNumber() + 1;
-                                }
-                            }
-                        } else if (current.getAction() instanceof org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo) {
-                            org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo action = (org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo) current.getAction();
-                            if (action.getDestination() instanceof PDPageDestination) {
-                                PDPageDestination pd = (PDPageDestination) action.getDestination();
-                                if (pd.getPage() != null) {
-                                    pageNum = document.getPages().indexOf(pd.getPage()) + 1;
-                                } else if (pd.getPageNumber() >= 0) {
-                                    pageNum = pd.getPageNumber() + 1;
-                                }
-                            }
-                        }
-                    } catch (Exception e) {
-                        pageNum = -1;
-                        logs.add("[ERROR] Failed to resolve outline page for title '" + title + "': " + e.getMessage());
-                    }
-                    if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
-                        float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
-                        headings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
-                        logs.add("[HEADING] Outline Heading Detected: '" + title + "' on page " + pageNum);
-                    }
-                    current = current.getNextSibling();
-                }
-            }
-
-            // Try text-based heading detection
-            float[] avgFontSize = {0};
-            int[] count = {0};
-            Map<Integer, Boolean> foundOnPage = new HashMap<>();
-            PDFTextStripper headingStripper = new PDFTextStripper() {
-                float lastY = -1;
-                int lastPage = -1;
-                @Override
-                protected void writeString(String string, List<TextPosition> textPositions) {
-                    if (textPositions.isEmpty()) return;
-                    float fontSize = textPositions.get(0).getFontSizeInPt();
-                    String fontName = textPositions.get(0).getFont().getName();
-                    boolean isBold = false;
-                    if (fontName != null) {
-                        String fontNameLower = fontName.toLowerCase();
-                        isBold = fontNameLower.contains("bold") || fontNameLower.contains("black");
-                    }
-                    float y = textPositions.get(0).getY();
-                    int page = getCurrentPageNo();
-                    float whitespaceAbove = (lastPage == page) ? Math.abs(y - lastY) : 100;
-                    avgFontSize[0] += fontSize;
-                    count[0]++;
-                    String line = string.trim();
-                    boolean probable = isProbableHeadingUniversal(line, fontSize, y, document.getPage(page - 1).getMediaBox().getHeight(),
-                            whitespaceAbove, customKeywords, (count[0] > 0 ? avgFontSize[0] / count[0] : 14), isBold);
-                    boolean fallback = false;
-                    if (!foundOnPage.getOrDefault(page, false)) {
-                        if ((isBold || fontSize >= (count[0] > 0 ? avgFontSize[0] / count[0] : 14)) && y < document.getPage(page - 1).getMediaBox().getHeight() * 0.33) {
-                            fallback = true;
-                            foundOnPage.put(page, true);
-                        }
-                    }
-                    if (probable || fallback) {
-                        float score = scoreHeading(line, fontSize, y,
-                                document.getPage(page - 1).getMediaBox().getHeight(),
-                                whitespaceAbove, customKeywords,
-                                (count[0] > 0 ? avgFontSize[0] / count[0] : 14));
-                        headings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
-                        logs.add("[HEADING] Text Heading Detected: '" + line + "' on page " + page);
-                    }
-                    lastY = y;
-                    lastPage = page;
-                }
-            };
-            headingStripper.setSortByPosition(true);
-            headingStripper.getText(document);
-
-            // If still empty, always run OCR fallback
-            if (headings.isEmpty()) {
-                logs.add("[INFO] No headings detected by outline/text, running OCR fallback.");
-                headings.addAll(detectHeadingsWithOCR(document, customKeywords));
-            }
-        }
-        headings.sort((a, b) -> Float.compare(b.getHeadingScore(), a.getHeadingScore()));
-        logs.add("[INFO] All Detected Headings (sorted):");
-        for (Heading h : headings) {
-            logs.add("[HEADING] '" + h.getText() + "' on page " + h.getPage() + " (score: " + h.getHeadingScore() + ")");
-        }
-        // Write all logs to a single file at the end
+    public List<Heading> detectHeadings(InputStream pdfStream, List<String> customKeywords) {
+        List<Heading> headings = new ArrayList<>();
+        List<String> logs = new ArrayList<>();
         try {
-            java.nio.file.Path logPath = java.nio.file.Paths.get("detailed_java_log.txt");
-            java.nio.file.Files.write(logPath, logs, java.nio.charset.StandardCharsets.UTF_8);
+            try (PDDocument document = PDDocument.load(pdfStream)) {
+                PDDocumentOutline outline = document.getDocumentCatalog().getDocumentOutline();
+                if (outline != null) {
+                    PDOutlineItem current = outline.getFirstChild();
+                    while (current != null) {
+                        String title = current.getTitle();
+                        int pageNum = -1;
+                        try {
+                            if (current.getDestination() != null) {
+                                if (current.getDestination() instanceof PDPageDestination) {
+                                    PDPageDestination pd = (PDPageDestination) current.getDestination();
+                                    if (pd.getPage() != null) {
+                                        pageNum = document.getPages().indexOf(pd.getPage()) + 1;
+                                    } else if (pd.getPageNumber() >= 0) {
+                                        pageNum = pd.getPageNumber() + 1;
+                                    }
+                                }
+                            } else if (current.getAction() instanceof org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo) {
+                                org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo action = (org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo) current.getAction();
+                                if (action.getDestination() instanceof PDPageDestination) {
+                                    PDPageDestination pd = (PDPageDestination) action.getDestination();
+                                    if (pd.getPage() != null) {
+                                        pageNum = document.getPages().indexOf(pd.getPage()) + 1;
+                                    } else if (pd.getPageNumber() >= 0) {
+                                        pageNum = pd.getPageNumber() + 1;
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            pageNum = -1;
+                            logs.add("[ERROR] Failed to resolve outline page for title '" + title + "': " + e.getMessage());
+                        }
+                        if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
+                            float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
+                            headings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
+                            logs.add("[HEADING] Outline Heading Detected: '" + title + "' on page " + pageNum);
+                        }
+                        current = current.getNextSibling();
+                    }
+                }
+
+                // Try text-based heading detection
+                float[] avgFontSize = {0};
+                int[] count = {0};
+                Map<Integer, Boolean> foundOnPage = new HashMap<>();
+                PDFTextStripper headingStripper = new PDFTextStripper() {
+                    float lastY = -1;
+                    int lastPage = -1;
+                    @Override
+                    protected void writeString(String string, List<TextPosition> textPositions) {
+                        if (textPositions.isEmpty()) return;
+                        float fontSize = textPositions.get(0).getFontSizeInPt();
+                        String fontName = textPositions.get(0).getFont().getName();
+                        boolean isBold = false;
+                        if (fontName != null) {
+                            String fontNameLower = fontName.toLowerCase();
+                            isBold = fontNameLower.contains("bold") || fontNameLower.contains("black");
+                        }
+                        float y = textPositions.get(0).getY();
+                        int page = getCurrentPageNo();
+                        float whitespaceAbove = (lastPage == page) ? Math.abs(y - lastY) : 100;
+                        avgFontSize[0] += fontSize;
+                        count[0]++;
+                        String line = string.trim();
+                        boolean probable = isProbableHeadingUniversal(line, fontSize, y, document.getPage(page - 1).getMediaBox().getHeight(),
+                                whitespaceAbove, customKeywords, (count[0] > 0 ? avgFontSize[0] / count[0] : 14), isBold);
+                        boolean fallback = false;
+                        if (!foundOnPage.getOrDefault(page, false)) {
+                            if ((isBold || fontSize >= (count[0] > 0 ? avgFontSize[0] / count[0] : 14)) && y < document.getPage(page - 1).getMediaBox().getHeight() * 0.33) {
+                                fallback = true;
+                                foundOnPage.put(page, true);
+                            }
+                        }
+                        if (probable || fallback) {
+                            float score = scoreHeading(line, fontSize, y,
+                                    document.getPage(page - 1).getMediaBox().getHeight(),
+                                    whitespaceAbove, customKeywords,
+                                    (count[0] > 0 ? avgFontSize[0] / count[0] : 14));
+                            headings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
+                            logs.add("[HEADING] Text Heading Detected: '" + line + "' on page " + page);
+                        }
+                        lastY = y;
+                        lastPage = page;
+                    }
+                };
+                headingStripper.setSortByPosition(true);
+                headingStripper.getText(document);
+
+                // If still empty, always run OCR fallback
+                if (headings.isEmpty()) {
+                    logs.add("[INFO] No headings detected by outline/text, running OCR fallback.");
+                    headings.addAll(detectHeadingsWithOCR(document, customKeywords));
+                }
+            }
+            headings.sort((a, b) -> Float.compare(b.getHeadingScore(), a.getHeadingScore()));
+            logs.add("[INFO] All Detected Headings (sorted):");
+            for (Heading h : headings) {
+                logs.add("[HEADING] '" + h.getText() + "' on page " + h.getPage() + " (score: " + h.getHeadingScore() + ")");
+            }
+            // Write all logs to a single file at the end
+            try {
+                java.nio.file.Path logPath = java.nio.file.Paths.get("detailed_java_log.txt");
+                java.nio.file.Files.write(logPath, logs, java.nio.charset.StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                // If logging fails, do nothing (avoid crashing main logic)
+            }
+            return headings;
+        } catch (OutOfMemoryError oom) {
+            System.err.println("Ran out of memory processing PDF.");
+            return new ArrayList<>();
         } catch (Exception e) {
-            // If logging fails, do nothing (avoid crashing main logic)
+            System.err.println("Failed to process PDF due to: " + e.getMessage());
+            return new ArrayList<>();
         }
-        return headings;
     }
 
     private List<Heading> detectHeadingsWithOCR(PDDocument document, List<String> customKeywords) {
