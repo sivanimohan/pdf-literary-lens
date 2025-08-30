@@ -108,21 +108,15 @@ async def process_pdf(file: UploadFile = File(...)):
             "authors": book_info.get("authors", []),
             "toc": []
         }
-        # Always use page numbers from Java backend
-        if isinstance(real_chapters, list):
-            # Build a lookup for headings by normalized title
-            def normalize(text):
-                return re.sub(r'\W+', '', text or '').lower()
-            headings_lookup = {normalize(h.get('title', h.get('chapter_full_title', ''))): h.get('pageNumber', 0) for h in headings if isinstance(h, dict)}
-            for ch in real_chapters:
-                chapter_title = ch.get("chapter_full_title", "")
-                norm_title = normalize(chapter_title)
-                page_number = headings_lookup.get(norm_title, 0)
-                final_json["toc"].append({
-                    "chapter_numerical_number": ch.get("chapter_numerical_number"),
-                    "chapter_full_title": chapter_title,
-                    "page_number": page_number
-                })
+        # Always use PDF page index for chapter start pages from Java backend
+            toc_source = matched_chapters if isinstance(matched_chapters, list) and matched_chapters else real_chapters
+            if isinstance(toc_source, list):
+                for ch in toc_source:
+                    final_json["toc"].append({
+                        "chapter_numerical_number": ch.get("chapter_numerical_number"),
+                        "chapter_full_title": ch.get("chapter_full_title"),
+                        "page_number": ch.get("page_start") if "page_start" in ch else ch.get("page_number", 0)
+                    })
     except Exception as e:
         log_data["fatal_error"] = str(e)
         final_json = {"error": str(e)}
