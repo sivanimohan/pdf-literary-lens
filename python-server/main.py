@@ -33,159 +33,106 @@ import re
 import difflib
 try:
     from pdfminer.high_level import extract_pages
-    from pdfminer.layout import LTTextContainer, LTChar
-except ImportError:
-    extract_pages = None
-    LTTextContainer = None
-    LTChar = None
-try:
-    import pytesseract
-    from PIL import Image
-except ImportError:
-    pytesseract = None
-    Image = None
+    from fastapi import FastAPI, UploadFile, File
+    import requests
+    from PyPDF2 import PdfReader
+    import tempfile
+    import os
+    import json
+    import re
 
-load_dotenv()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+    app = FastAPI()
 
-
-app = FastAPI()
-
-def parse_roman(s):
-    roman_map = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
-    s = s.upper()
-    num, prev = 0, 0
-    for c in reversed(s):
-        val = roman_map.get(c, 0)
-        if val < prev:
-            num -= val
-        else:
-            num += val
-        prev = val
-    return num if num > 0 else None
-
-def parse_page_number(s):
-    if re.match(r'^[0-9]+$', s):
-        return int(s)
-    elif re.match(r'^[IVXLCDM]+$', s, re.I):
-        return parse_roman(s)
-    return None
-
-def extract_toc(pdf_path, max_pages=20):
-    reader = PdfReader(pdf_path)
-    toc_entries = []
-    multi_line_buffer = []
-    toc_pattern = re.compile(r"^(.*?)(\.{{2,}}|\s{{2,}})([0-9]+|[IVXLCDM]+)$", re.I)
-    for i in range(min(max_pages, len(reader.pages))):
-        text = reader.pages[i].extract_text() or ""
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            m = toc_pattern.match(line)
-            if m:
-                title = m.group(1).strip()
-                page_str = m.group(3)
-                page_num = parse_page_number(page_str)
-                if multi_line_buffer:
-                    title = " ".join(multi_line_buffer) + " " + title
-                    multi_line_buffer = []
-                toc_entries.append({"chapter_title": title, "printed_page_number": page_num})
+    def parse_roman(s):
+        roman_map = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+        s = s.upper()
+        num, prev = 0, 0
+        for c in reversed(s):
+            val = roman_map.get(c, 0)
+            if val < prev:
+                num -= val
             else:
-                multi_line_buffer.append(line)
-    return toc_entries
+                num += val
+            prev = val
+        return num if num > 0 else None
 
-def extract_headings_font(pdf_path):
-    headings = []
-    if extract_pages is None:
-        return headings
-    multi_line_buffer = []
-    for page_layout in extract_pages(pdf_path):
-        for element in page_layout:
-            if isinstance(element, LTTextContainer):
-                for text_line in element:
-                    if hasattr(text_line, 'get_text'):
-                        line = text_line.get_text().strip()
-                        if not line:
-                            continue
-                        if line.endswith('-'):
-                            multi_line_buffer.append(line[:-1])
-                            continue
-                        if multi_line_buffer:
-                            line = "".join(multi_line_buffer) + line
-                            multi_line_buffer = []
-                        if len(line) < 8:
-                            continue
-                        font_sizes = [char.size for char in text_line if isinstance(char, LTChar)]
-                        if font_sizes and max(font_sizes) > 12:
-                            headings.append({"title": line, "pdf_page_index": page_layout.pageid})
-    return headings
+    def parse_page_number(s):
+        if re.match(r'^[0-9]+$', s):
+            return int(s)
+        elif re.match(r'^[IVXLCDM]+$', s, re.I):
+            return parse_roman(s)
+        return None
 
-def extract_bookmarks(pdf_path):
-    reader = PdfReader(pdf_path)
-    bookmarks = []
-    def walk(outlines):
-        for item in outlines:
-            if isinstance(item, list):
-                walk(item)
-            else:
-                title = getattr(item, 'title', None)
-                try:
-                    page_index = reader.get_destination_page_number(item)
-                except Exception:
-                    page_index = None
-                if title is not None and page_index is not None:
-                    bookmarks.append({"title": title, "pdf_page_index": page_index})
-    try:
-        walk(reader.outline)
-    except Exception:
-        pass
-    return bookmarks
+    def extract_toc(pdf_path, max_pages=15):
+        reader = PdfReader(pdf_path)
+        toc_entries = []
+        multi_line_buffer = []
+        toc_pattern = re.compile(r"^(.*?)(\.{2,}|\s{2,})([0-9]+|[IVXLCDM]+)$", re.I)
+        for i in range(min(max_pages, len(reader.pages))):
+            text = reader.pages[i].extract_text() or ""
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                m = toc_pattern.match(line)
+                if m:
+                    title = m.group(1).strip()
+                    page_str = m.group(3)
+                    page_num = parse_page_number(page_str)
+                    if multi_line_buffer:
+                        title = " ".join(multi_line_buffer) + " " + title
+                        multi_line_buffer = []
+                    toc_entries.append({"chapter_title": title, "printed_page_number": page_num})
+                else:
+                    multi_line_buffer.append(line)
+        return toc_entries
 
-def ocr_headings(pdf_path, max_pages=5):
-    headings = []
-    if pytesseract is None or Image is None:
-        return headings
-    reader = PdfReader(pdf_path)
-    for i in range(min(max_pages, len(reader.pages))):
-        # You need to render the PDF page to an image here (use pdf2image or similar)
-        # For demonstration, assume you have an image file path
-        # img = Image.open(tmp_img.name)
-        # text = pytesseract.image_to_string(img)
-        # for line in text.splitlines():
-        #     if len(line.strip()) >= 8:
-        #         headings.append({"title": line.strip(), "pdf_page_index": i})
-        pass
-    return headings
+    def get_java_headings(toc):
+        # Send TOC to Java backend and get chapter headings
+        # Replace with your actual Java backend endpoint
+        url = "http://localhost:8080/api/chapter-headings"  # Example endpoint
+        try:
+            response = requests.post(url, json={"toc": toc})
+            if response.status_code == 200:
+                return response.json().get("headings", [])
+        except Exception:
+            pass
+        return []
 
-def fuzzy_match_toc_to_headings(toc, headings):
-    deduped = []
-    heading_titles = [h["title"] for h in headings]
-    offset = estimate_page_offset(toc, headings)
-    for entry in toc:
-        title = entry["chapter_title"]
-        matches = difflib.get_close_matches(title, heading_titles, n=1, cutoff=0.7)
-        pdf_index = None
-        if matches:
-            match_title = matches[0]
-            for h in headings:
-                if h["title"] == match_title:
-                    pdf_index = h["pdf_page_index"]
-                    break
-        if pdf_index is not None:
-            pdf_index += offset
-        deduped.append({
-            "chapter_title": title,
-            "printed_page_number": entry["printed_page_number"],
-            "pdf_page_index": pdf_index if pdf_index is not None else 0
-        })
-    return deduped
+    @app.post("/process-pdf")
+    async def process_pdf(file: UploadFile = File(...)):
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(await file.read())
+                tmp_path = tmp.name
 
-def parse_gemini_json(text):
-    cleaned = re.sub(r"^```json|^```|```$", "", text.strip(), flags=re.MULTILINE)
-    try:
-        return json.loads(cleaned)
+            # 1. Extract TOC (first 15 pages)
+            toc = extract_toc(tmp_path, max_pages=15)
+
+            # 2. Get chapter headings from Java backend
+            java_headings = get_java_headings(toc)
+
+            # 3. Match TOC to Java headings (simple title match)
+            toc_list = []
+            for entry in toc:
+                match = next((h for h in java_headings if h.get("text") == entry["chapter_title"]), None)
+                toc_list.append({
+                    "chapter_numerical_number": match.get("number") if match else None,
+                    "chapter_full_title": entry["chapter_title"],
+                    "page_number": match.get("page") if match else entry.get("printed_page_number", 0)
+                })
+
+            # 4. Compose final output
+            book_title = "Where Shall Wisdom Be Found?"  # TODO: Replace with dynamic extraction if available
+            authors = ["Harold Bloom"]  # TODO: Replace with dynamic extraction if available
+            final_json = {
+                "book_title": book_title,
+                "authors": authors,
+                "toc": toc_list
+            }
+        except Exception as e:
+            final_json = {"error": str(e)}
+        return final_json
     except Exception:
         return {}
 
