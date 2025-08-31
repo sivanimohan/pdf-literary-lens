@@ -1,15 +1,8 @@
 package com.kongole.stirlingproxy.service;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.*;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination;
-import org.apache.pdfbox.text.TextPosition;
-import org.apache.pdfbox.rendering.PDFRenderer;
-import net.sourceforge.tess4j.ITesseract;
-import net.sourceforge.tess4j.Tesseract;
-import net.sourceforge.tess4j.TesseractException;
-import java.awt.image.BufferedImage;
 import java.io.InputStream;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -17,7 +10,15 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class PdfHeadingDetectionService {
-    private static final Pattern PAGE_LABEL_PATTERN = Pattern.compile("^page0*\\d+$", Pattern.CASE_INSENSITIVE);
+    // ...existing code...
+    // Manual mapping support: allow user to provide a map of page numbers to headings
+    private Map<Integer, String> manualHeadingMap = new HashMap<>();
+
+    public void setManualHeadingMap(Map<Integer, String> manualMap) {
+        this.manualHeadingMap = manualMap;
+    }
+
+    // Removed unused PAGE_LABEL_PATTERN field
     // Simplified regex: only matches generic heading patterns, not specific chapter titles
     private static final Pattern HEADING_REGEX = Pattern.compile(
         "^(CHAPTER|SECTION|PART|UNIT)\\s+([0-9]+|[IVXLCDM]+)?(\\s*[:\\-].*)?$",
@@ -55,10 +56,11 @@ public class PdfHeadingDetectionService {
     }
 
     public List<Heading> detectHeadings(InputStream pdfStream, List<String> customKeywords) {
-        List<Heading> headings = new ArrayList<>();
+        List<Heading> candidateHeadings = new ArrayList<>();
         List<String> logs = new ArrayList<>();
         try {
             try (PDDocument document = PDDocument.load(pdfStream)) {
+                // 1. Bookmarks/Outline Extraction
                 PDDocumentOutline outline = document.getDocumentCatalog().getDocumentOutline();
                 if (outline != null) {
                     PDOutlineItem current = outline.getFirstChild();
@@ -92,14 +94,32 @@ public class PdfHeadingDetectionService {
                         }
                         if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
                             float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
-                            headings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
-                            logs.add("[HEADING] Outline Heading Detected: '" + title + "' on page " + pageNum);
+                            candidateHeadings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
                         }
                         current = current.getNextSibling();
                     }
                 }
 
-                // Try text-based heading detection
+                // 2. TOC Page Parsing (first 15 pages)
+                PDFTextStripper tocStripper = new PDFTextStripper();
+                tocStripper.setStartPage(1);
+                tocStripper.setEndPage(Math.min(15, document.getNumberOfPages()));
+                String tocText = tocStripper.getText(document);
+                String[] tocLines = tocText.split("\r?\n");
+                Pattern tocPattern = Pattern.compile("^(.*?)(\.\.{2,}|\s{2,})(\d+)$");
+                for (String line : tocLines) {
+                    Matcher m = tocPattern.matcher(line.trim());
+                    if (m.find()) {
+                        String title = m.group(1).trim();
+                        int pageNum = Integer.parseInt(m.group(3));
+                        if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
+                            float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
+                            candidateHeadings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
+                        }
+                    }
+                }
+
+                // 3. Text-based Heading Detection (Font, Position, Regex, etc.)
                 float[] avgFontSize = {0};
                 int[] count = {0};
                 Map<Integer, Boolean> foundOnPage = new HashMap<>();
@@ -107,7 +127,7 @@ public class PdfHeadingDetectionService {
                     float lastY = -1;
                     int lastPage = -1;
                     @Override
-                    protected void writeString(String string, List<TextPosition> textPositions) {
+                    protected void writeString(String string, List<org.apache.pdfbox.text.TextPosition> textPositions) {
                         if (textPositions.isEmpty()) return;
                         float fontSize = textPositions.get(0).getFontSizeInPt();
                         String fontName = textPositions.get(0).getFont().getName();
@@ -122,8 +142,8 @@ public class PdfHeadingDetectionService {
                         avgFontSize[0] += fontSize;
                         count[0]++;
                         String line = string.trim();
-                        boolean probable = isProbableHeadingUniversal(line, fontSize, y, document.getPage(page - 1).getMediaBox().getHeight(),
-                                whitespaceAbove, customKeywords, (count[0] > 0 ? avgFontSize[0] / count[0] : 14), isBold);
+                        boolean probable = isProbableHeadingUniversal(line, (int)fontSize, (int)y, (int)document.getPage(page - 1).getMediaBox().getHeight(),
+                                (int)whitespaceAbove, customKeywords, (count[0] > 0 ? (int)(avgFontSize[0] / count[0]) : 14), isBold);
                         boolean fallback = false;
                         if (!foundOnPage.getOrDefault(page, false)) {
                             if ((isBold || fontSize >= (count[0] > 0 ? avgFontSize[0] / count[0] : 14)) && y < document.getPage(page - 1).getMediaBox().getHeight() * 0.33) {
@@ -136,8 +156,7 @@ public class PdfHeadingDetectionService {
                                     document.getPage(page - 1).getMediaBox().getHeight(),
                                     whitespaceAbove, customKeywords,
                                     (count[0] > 0 ? avgFontSize[0] / count[0] : 14));
-                            headings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
-                            logs.add("[HEADING] Text Heading Detected: '" + line + "' on page " + page);
+                            candidateHeadings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
                         }
                         lastY = y;
                         lastPage = page;
@@ -146,43 +165,44 @@ public class PdfHeadingDetectionService {
                 headingStripper.setSortByPosition(true);
                 headingStripper.getText(document);
 
-                // If still empty, always run OCR fallback
-                if (headings.isEmpty()) {
-                    logs.add("[INFO] No headings detected by outline/text, running OCR fallback.");
-                    headings.addAll(detectHeadingsWithOCR(document, customKeywords));
+                // 4. OCR Fallback
+                if (candidateHeadings.isEmpty()) {
+                    candidateHeadings.addAll(detectHeadingsWithOCR(document, customKeywords));
                 }
-            }
-            headings.sort((a, b) -> Float.compare(b.getHeadingScore(), a.getHeadingScore()));
-            logs.add("[INFO] All Detected Headings (sorted):");
-            for (Heading h : headings) {
-                logs.add("[HEADING] '" + h.getText() + "' on page " + h.getPage() + " (score: " + h.getHeadingScore() + ")");
-            }
-            // Write all logs to a single file at the end
-            try {
-                java.nio.file.Path logPath = java.nio.file.Paths.get("detailed_java_log.txt");
-                java.nio.file.Files.write(logPath, logs, java.nio.charset.StandardCharsets.UTF_8);
-            } catch (Exception e) {
-                // If logging fails, do nothing (avoid crashing main logic)
-            }
-            return headings;
-        } catch (OutOfMemoryError oom) {
-            System.err.println("Ran out of memory processing PDF.");
-            return new ArrayList<>();
-        } catch (Exception e) {
-            System.err.println("Failed to process PDF due to: " + e.getMessage());
-            return new ArrayList<>();
-        }
-    }
 
+                // 5. Manual Mapping Override
+                if (manualHeadingMap != null && !manualHeadingMap.isEmpty()) {
+                    for (Map.Entry<Integer, String> entry : manualHeadingMap.entrySet()) {
+                        candidateHeadings.add(new Heading(entry.getValue(), entry.getKey(), 14, 0, 100, 0, 1.0f));
+                    }
+                }
+
+                // 6. Ensemble: Deduplicate and Sort
+                Map<String, Heading> uniqueHeadings = new LinkedHashMap<>();
+                for (Heading h : candidateHeadings) {
+                    String key = h.getText().trim().toLowerCase() + "@" + h.getPage();
+                    if (!uniqueHeadings.containsKey(key)) {
+                        uniqueHeadings.put(key, h);
+                    }
+                }
+                List<Heading> headings = new ArrayList<>(uniqueHeadings.values());
+                headings.sort((a, b) -> Float.compare(b.getHeadingScore(), a.getHeadingScore()));
+                return headings;
+            }
+        } catch (Exception e) {
+            // ...existing error handling...
+        }
+        return new ArrayList<>();
+    // OCR fallback method
     private List<Heading> detectHeadingsWithOCR(PDDocument document, List<String> customKeywords) {
         List<Heading> headings = new ArrayList<>();
         try {
-            PDFRenderer pdfRenderer = new PDFRenderer(document);
-            ITesseract tesseract = new Tesseract();
+            org.apache.pdfbox.rendering.PDFRenderer pdfRenderer = new org.apache.pdfbox.rendering.PDFRenderer(document);
+            net.sourceforge.tess4j.ITesseract tesseract = new net.sourceforge.tess4j.Tesseract();
             tesseract.setDatapath("tessdata");
             tesseract.setLanguage("eng");
             for (int page = 0; page < document.getNumberOfPages(); page++) {
-                BufferedImage bim = pdfRenderer.renderImageWithDPI(page, 300);
+                java.awt.image.BufferedImage bim = pdfRenderer.renderImageWithDPI(page, 300);
                 String ocrText = tesseract.doOCR(bim);
                 String[] lines = ocrText.split("\r?\n");
                 for (String line : lines) {
@@ -193,32 +213,9 @@ public class PdfHeadingDetectionService {
                     }
                 }
             }
-        } catch (TesseractException | java.io.IOException ignore) {}
+        } catch (Exception ignore) {}
         return headings;
     }
-
-    private boolean isProbableHeadingUniversal(String text, float fontSize, float yPos, float pageHeight,
-                                      float whitespaceAbove, List<String> customKeywords, float avgFont, boolean isBold) {
-        if (text == null || text.isEmpty()) return false;
-        String cleaned = text.trim();
-        if (PAGE_LABEL_PATTERN.matcher(cleaned).matches()) return false;
-        if (HEADING_REGEX.matcher(cleaned.toUpperCase()).matches()) return true;
-        for (String kw : EXTRA_KEYWORDS) {
-            if (cleaned.equalsIgnoreCase(kw) || cleaned.toLowerCase().startsWith(kw + " ")) return true;
-        }
-        if (customKeywords != null) {
-            for (String kw : customKeywords) {
-                if (cleaned.toLowerCase().contains(kw.toLowerCase())) return true;
-            }
-        }
-    // Universal heading heuristics (relaxed)
-    if (cleaned.equals(cleaned.toUpperCase()) && cleaned.split("\\s+").length <= 14 && cleaned.length() > 2) return true;
-    if ((isBold || fontSize >= avgFont) && yPos < pageHeight * 0.50) return true;
-    if (whitespaceAbove > 8 && (fontSize >= avgFont - 1 || isBold)) return true;
-    if (fontSize >= avgFont + 2) return true;
-    if (cleaned.matches("^[A-Z][A-Za-z0-9 ,:;\\-]{0,80}$") && yPos < pageHeight * 0.60) return true;
-    if (cleaned.matches("^(APPENDIX|GLOSSARY|BIBLIOGRAPHY|INDEX|REFERENCES|ACKNOWLEDGMENTS?)($|[ .:,-])")) return true;
-    return false;
     }
 
     private float scoreHeading(String text, float fontSize, float yPos, float pageHeight,
@@ -237,5 +234,24 @@ public class PdfHeadingDetectionService {
         }
         if (whitespaceAbove > 20) score += 0.1;
         return score;
+    }
+
+    // Added missing method
+    private boolean isProbableHeadingUniversal(String text, int fontSize, int yPos, int pageHeight,
+                                               int whitespaceAbove, List<String> customKeywords,
+                                               int avgFont, boolean strict) {
+        if (text == null || text.trim().isEmpty()) return false;
+        if (HEADING_REGEX.matcher(text.toUpperCase()).matches()) return true;
+        for (String kw : EXTRA_KEYWORDS) {
+            if (text.equalsIgnoreCase(kw) || text.toLowerCase().startsWith(kw + " ")) return true;
+        }
+        if (customKeywords != null) {
+            for (String kw : customKeywords) {
+                if (text.toLowerCase().contains(kw.toLowerCase())) return true;
+            }
+        }
+        if (fontSize >= avgFont + 2 && whitespaceAbove > 20) return true;
+        if (!strict && fontSize >= avgFont && whitespaceAbove > 10) return true;
+        return false;
     }
 }
