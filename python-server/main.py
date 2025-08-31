@@ -235,8 +235,21 @@ async def process_pdf(file: UploadFile = File(...)):
         deduped = fuzzy_match_toc_to_headings(toc, all_headings)
         log_data["deduped"] = deduped
 
+        # Compose final output in required format
+        # You may want to extract book_title and authors from metadata or input; here, placeholders are used
+        book_title = "Where Shall Wisdom Be Found?"  # TODO: Replace with dynamic extraction if available
+        authors = ["Harold Bloom"]  # TODO: Replace with dynamic extraction if available
+        toc_list = []
+        for entry in deduped:
+            toc_list.append({
+                "chapter_numerical_number": entry.get("chapter_numerical_number"),
+                "chapter_full_title": entry.get("chapter_title"),
+                "page_number": entry.get("pdf_page_index", entry.get("printed_page_number", 0))
+            })
         final_json = {
-            "toc": deduped
+            "book_title": book_title,
+            "authors": authors,
+            "toc": toc_list
         }
     except Exception as e:
         log_data["fatal_error"] = str(e)
