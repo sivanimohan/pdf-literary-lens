@@ -1,4 +1,5 @@
 import re
+import os
 import requests
 import tempfile
 import json
@@ -8,6 +9,9 @@ from PyPDF2 import PdfReader
 
 app = FastAPI()
 
+# Read Gemini API key from env var, fallback to empty string if not set
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
 def extract_first_n_pages_text(pdf_path, n=15):
     reader = PdfReader(pdf_path)
     texts = []
@@ -16,8 +20,8 @@ def extract_first_n_pages_text(pdf_path, n=15):
         texts.append(text)
     return "\n".join(texts)
 
-def extract_toc_with_gemini(text, gemini_api_key):
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + gemini_api_key
+def extract_toc_with_gemini(text):
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
     prompt = (
         "Given the following text from the first 15 pages of a book PDF, extract the table of contents as a list of chapters. "
         "For each chapter, return a JSON object with 'chapter_title' and 'printed_page_number'. "
@@ -57,8 +61,8 @@ def get_java_headings(pdf_path):
             return {"error": str(e)}
     return []
 
-def match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book_title):
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + gemini_api_key
+def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
     prompt = (
         f"Here is a list of chapters from this book: {book_title}\n\n[TOC LIST]\n"
         + str(toc)
@@ -89,13 +93,13 @@ def match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book
         return []
 
 @app.post("/extract-toc")
-async def extract_toc_endpoint(file: UploadFile = File(...), gemini_api_key: str = ""):
+async def extract_toc_endpoint(file: UploadFile = File(...)):
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
         first_15_text = extract_first_n_pages_text(tmp_path, n=15)
-        toc = extract_toc_with_gemini(first_15_text, gemini_api_key) if gemini_api_key else []
+        toc = extract_toc_with_gemini(first_15_text) if GEMINI_API_KEY else []
         return JSONResponse(content={"toc": toc})
     except Exception as e:
         return JSONResponse(content={"error": str(e)})
@@ -103,7 +107,6 @@ async def extract_toc_endpoint(file: UploadFile = File(...), gemini_api_key: str
 @app.post("/match-toc-java")
 async def match_toc_java_endpoint(
     file: UploadFile = File(...),
-    gemini_api_key: str = "",
     book_title: str = "Unknown Title",
     author: str = "Unknown Author"
 ):
@@ -112,9 +115,9 @@ async def match_toc_java_endpoint(
             tmp.write(await file.read())
             tmp_path = tmp.name
         first_15_text = extract_first_n_pages_text(tmp_path, n=15)
-        toc = extract_toc_with_gemini(first_15_text, gemini_api_key) if gemini_api_key else []
+        toc = extract_toc_with_gemini(first_15_text) if GEMINI_API_KEY else []
         java_headings = get_java_headings(tmp_path)
-        final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book_title) if gemini_api_key else []
+        final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, book_title) if GEMINI_API_KEY else []
         final_json = {
             "book_title": book_title,
             "authors": [author],
@@ -127,7 +130,6 @@ async def match_toc_java_endpoint(
 @app.post("/process-pdf")
 async def process_pdf(
     file: UploadFile = File(...),
-    gemini_api_key: str = "",
     book_title: str = "Unknown Title",
     author: str = "Unknown Author"
 ):
@@ -136,9 +138,9 @@ async def process_pdf(
             tmp.write(await file.read())
             tmp_path = tmp.name
         first_15_text = extract_first_n_pages_text(tmp_path, n=15)
-        toc = extract_toc_with_gemini(first_15_text, gemini_api_key) if gemini_api_key else []
+        toc = extract_toc_with_gemini(first_15_text) if GEMINI_API_KEY else []
         java_headings = get_java_headings(tmp_path)
-        final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book_title) if gemini_api_key else []
+        final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, book_title) if GEMINI_API_KEY else []
         final_json = {
             "book_title": book_title,
             "authors": [author],
