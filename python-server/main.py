@@ -23,11 +23,26 @@ def extract_first_n_pages_text(pdf_path, n=15):
     print(extracted[:2000])  # Print first 2000 chars for brevity
     return extracted
 
+def parse_chapter_list(text_response):
+    # Regex matches: *   Chapter N: Title: Page
+    pattern = r"\*\s*Chapter\s*(\d+):\s*(.*?):\s*(\d+)"
+    chapters = []
+    for match in re.finditer(pattern, text_response):
+        chapters.append({
+            "chapter_number": int(match.group(1)),
+            "chapter_title": match.group(2).strip(),
+            "printed_page_number": int(match.group(3))
+        })
+    return chapters
+
 def extract_toc_with_gemini(text):
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
     prompt = (
         "Given the following text from the first 15 pages of a book PDF, extract the table of contents as a list of chapters. "
         "For each chapter, return a JSON object with 'chapter_title' and 'printed_page_number'. "
+        "Return the result as a JSON list like this: "
+        "[{\"chapter_title\": \"...\", \"printed_page_number\": ...}, ...]. "
+        "Do NOT use Markdown or plain text or bullet lists. "
         "If the TOC is not present, return an empty list.\nText:\n" + text
     )
     headers = {"Content-Type": "application/json"}
@@ -47,7 +62,11 @@ def extract_toc_with_gemini(text):
                         return toc_entries
                 except Exception:
                     print("[DEBUG] Gemini TOC response not valid JSON:", text_response)
-                    pass
+                    # Try fallback parsing
+                    toc_entries = parse_chapter_list(text_response)
+                    if toc_entries:
+                        print("[DEBUG] Parsed chapter list from markdown format.")
+                        return toc_entries
         return []
     except Exception as e:
         print("[DEBUG] Gemini TOC API exception:", e)
@@ -80,6 +99,7 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
         "- In some cases there might be minor differences of the wording, that's ok, as long as it's clearly referring to the same chapter.\n\n"
         "- In some cases, you may see that the chapter name is divided across 2 entries, that's just a parsing error, but you're still able to identify the chapter by recognizing that the name is split across 2 entries.\n\n"
         "- Where there is some ambiguity, make reasonable guesses that will make the overall TOC make sense. For instance if you're struggling to match a particular chapter and there are 2 possibilities for that chapter, but one of them makes it very close to the start of another chapter, meaning that the chapter is very short compared to all others, that's suggestive that's the wrong one. You can use similar heuristics. But ONLY for those that aren't clear from the first place, which should be most of them.\n\n"
+        "Return the result as a JSON list like this: [{\"chapter_title\": \"...\", \"printed_page_number\": ...}, ...]. Do NOT use Markdown or plain text or bullet lists.\n\n"
         "[JAVA HEADINGS LIST]\n"
         + str(java_headings)
     )
@@ -100,7 +120,11 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
                         return final_chapters
                 except Exception:
                     print("[DEBUG] Gemini match response not valid JSON:", text_response)
-                    pass
+                    # Try fallback parsing
+                    final_chapters = parse_chapter_list(text_response)
+                    if final_chapters:
+                        print("[DEBUG] Parsed chapter list from markdown format.")
+                        return final_chapters
         return []
     except Exception as e:
         print("[DEBUG] Gemini match API exception:", e)
