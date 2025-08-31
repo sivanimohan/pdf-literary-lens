@@ -1,3 +1,25 @@
+def is_image_based_pdf(pdf_path):
+    reader = PdfReader(pdf_path)
+    for i in range(min(5, len(reader.pages))):
+        text = reader.pages[i].extract_text() or ""
+        if text and len(text.strip()) > 50:
+            return False
+    return True
+
+def estimate_page_offset(toc, headings):
+    diffs = []
+    for entry in toc:
+        printed = entry.get("printed_page_number")
+        title = entry.get("chapter_title")
+        for h in headings:
+            if h["title"] == title:
+                pdf_index = h.get("pdf_page_index")
+                if printed is not None and pdf_index is not None:
+                    diffs.append(pdf_index - printed)
+    if not diffs:
+        return 0
+    diffs.sort()
+    return diffs[len(diffs)//2]
 from fastapi import FastAPI, UploadFile, File
 import requests
 import google.generativeai as genai
@@ -8,12 +30,157 @@ from dotenv import load_dotenv
 import time
 import json
 import re
+import difflib
+try:
+    from pdfminer.high_level import extract_pages
+    from pdfminer.layout import LTTextContainer, LTChar
+except ImportError:
+    extract_pages = None
+    LTTextContainer = None
+    LTChar = None
+try:
+    import pytesseract
+    from PIL import Image
+except ImportError:
+    pytesseract = None
+    Image = None
 
 load_dotenv()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 
+
 app = FastAPI()
+
+def parse_roman(s):
+    roman_map = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+    s = s.upper()
+    num, prev = 0, 0
+    for c in reversed(s):
+        val = roman_map.get(c, 0)
+        if val < prev:
+            num -= val
+        else:
+            num += val
+        prev = val
+    return num if num > 0 else None
+
+def parse_page_number(s):
+    if re.match(r'^[0-9]+$', s):
+        return int(s)
+    elif re.match(r'^[IVXLCDM]+$', s, re.I):
+        return parse_roman(s)
+    return None
+
+def extract_toc(pdf_path, max_pages=20):
+    reader = PdfReader(pdf_path)
+    toc_entries = []
+    multi_line_buffer = []
+    toc_pattern = re.compile(r"^(.*?)(\.{{2,}}|\s{{2,}})([0-9]+|[IVXLCDM]+)$", re.I)
+    for i in range(min(max_pages, len(reader.pages))):
+        text = reader.pages[i].extract_text() or ""
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m = toc_pattern.match(line)
+            if m:
+                title = m.group(1).strip()
+                page_str = m.group(3)
+                page_num = parse_page_number(page_str)
+                if multi_line_buffer:
+                    title = " ".join(multi_line_buffer) + " " + title
+                    multi_line_buffer = []
+                toc_entries.append({"chapter_title": title, "printed_page_number": page_num})
+            else:
+                multi_line_buffer.append(line)
+    return toc_entries
+
+def extract_headings_font(pdf_path):
+    headings = []
+    if extract_pages is None:
+        return headings
+    multi_line_buffer = []
+    for page_layout in extract_pages(pdf_path):
+        for element in page_layout:
+            if isinstance(element, LTTextContainer):
+                for text_line in element:
+                    if hasattr(text_line, 'get_text'):
+                        line = text_line.get_text().strip()
+                        if not line:
+                            continue
+                        if line.endswith('-'):
+                            multi_line_buffer.append(line[:-1])
+                            continue
+                        if multi_line_buffer:
+                            line = "".join(multi_line_buffer) + line
+                            multi_line_buffer = []
+                        if len(line) < 8:
+                            continue
+                        font_sizes = [char.size for char in text_line if isinstance(char, LTChar)]
+                        if font_sizes and max(font_sizes) > 12:
+                            headings.append({"title": line, "pdf_page_index": page_layout.pageid})
+    return headings
+
+def extract_bookmarks(pdf_path):
+    reader = PdfReader(pdf_path)
+    bookmarks = []
+    def walk(outlines):
+        for item in outlines:
+            if isinstance(item, list):
+                walk(item)
+            else:
+                title = getattr(item, 'title', None)
+                try:
+                    page_index = reader.get_destination_page_number(item)
+                except Exception:
+                    page_index = None
+                if title is not None and page_index is not None:
+                    bookmarks.append({"title": title, "pdf_page_index": page_index})
+    try:
+        walk(reader.outline)
+    except Exception:
+        pass
+    return bookmarks
+
+def ocr_headings(pdf_path, max_pages=5):
+    headings = []
+    if pytesseract is None or Image is None:
+        return headings
+    reader = PdfReader(pdf_path)
+    for i in range(min(max_pages, len(reader.pages))):
+        # You need to render the PDF page to an image here (use pdf2image or similar)
+        # For demonstration, assume you have an image file path
+        # img = Image.open(tmp_img.name)
+        # text = pytesseract.image_to_string(img)
+        # for line in text.splitlines():
+        #     if len(line.strip()) >= 8:
+        #         headings.append({"title": line.strip(), "pdf_page_index": i})
+        pass
+    return headings
+
+def fuzzy_match_toc_to_headings(toc, headings):
+    deduped = []
+    heading_titles = [h["title"] for h in headings]
+    offset = estimate_page_offset(toc, headings)
+    for entry in toc:
+        title = entry["chapter_title"]
+        matches = difflib.get_close_matches(title, heading_titles, n=1, cutoff=0.7)
+        pdf_index = None
+        if matches:
+            match_title = matches[0]
+            for h in headings:
+                if h["title"] == match_title:
+                    pdf_index = h["pdf_page_index"]
+                    break
+        if pdf_index is not None:
+            pdf_index += offset
+        deduped.append({
+            "chapter_title": title,
+            "printed_page_number": entry["printed_page_number"],
+            "pdf_page_index": pdf_index if pdf_index is not None else 0
+        })
+    return deduped
 
 def parse_gemini_json(text):
     cleaned = re.sub(r"^```json|^```|```$", "", text.strip(), flags=re.MULTILINE)
@@ -21,6 +188,7 @@ def parse_gemini_json(text):
         return json.loads(cleaned)
     except Exception:
         return {}
+
 
 @app.post("/process-pdf")
 async def process_pdf(file: UploadFile = File(...)):
@@ -32,97 +200,44 @@ async def process_pdf(file: UploadFile = File(...)):
             tmp_path = tmp.name
         log_data["pdf_path"] = tmp_path
 
-        reader = PdfReader(tmp_path)
-        num_pages = min(15, len(reader.pages))
-        extracted_text = "\n".join([reader.pages[i].extract_text() or "" for i in range(num_pages)])
-        log_data["extracted_text_first_15"] = extracted_text
+        # PDF type preprocessing
+        image_based = is_image_based_pdf(tmp_path)
+        log_data["is_image_based"] = image_based
 
-        # Use Gemini 2.5 Pro for all calls
-        model = genai.GenerativeModel("gemini-2.5-pro")
+        # 1. Extract TOC (first 20 pages, regex for dotted lines, multi-line, roman numerals)
+        toc = extract_toc(tmp_path, max_pages=20)
+        log_data["toc_extracted"] = toc
 
-        # 1. TOC Extraction: exhaustive prompt
-        prompt1 = (
-            "You are a meticulous data extractor. From the following text from the first 15 pages of a PDF, extract the book title, authors, and a complete Table of Contents (TOC).\n"
-            "Your main goal is to be exhaustive with the TOC. You must extract *every single item* listed, including:\n"
-            "- Parts or Sections (e.g., 'Part I: Title')\n"
-            "- Standard chapters (e.g., '1. Chapter Title')\n"
-            "- Non-numbered sections like 'Preface', 'Foreword', 'Introduction', 'Acknowledgments', 'Conclusion', 'Postscript', etc.\n"
-            "- Appendices and end matter like 'Notes', 'References', 'Bibliography', and 'Index'.\n"
-            "Return the results as a single JSON object in the exact format below. Do not omit any items from the TOC.\n"
-            "{\n  'book_title': 'Exact Book Title',\n  'authors': ['Author One', 'Author Two'],\n  'toc': [\n    {'chapter_numerical_number': 1, 'chapter_full_title': 'Chapter 1: Title'},\n    {'chapter_numerical_number': null, 'chapter_full_title': 'Preface'}\n  ]\n}\n"
-            f"TEXT FROM FIRST 15 PAGES:\n{extracted_text}"
-        )
-        log_data["gemini_metadata_prompt"] = prompt1
+        # 2. Extract candidate headings (font/layout, multi-line)
+        headings_font = extract_headings_font(tmp_path) if not image_based else []
+        log_data["headings_font"] = headings_font
 
-        try:
-            result1 = model.generate_content(prompt1)
-            book_info = parse_gemini_json(result1.text)
-            log_data["gemini_metadata_output"] = result1.text
-        except Exception as e:
-            log_data["gemini_metadata_error"] = str(e)
-            book_info = {}
+        # 3. Extract bookmarks (if present)
+        bookmarks = extract_bookmarks(tmp_path) if not image_based else []
+        log_data["bookmarks"] = bookmarks
 
-        book_title = book_info.get('book_title', '')
-        real_chapters = book_info.get('toc', [])
+        # 4. OCR fallback (for image-based pages)
+        ocr_headings_list = ocr_headings(tmp_path) if image_based else []
+        log_data["ocr_headings"] = ocr_headings_list
 
-        # 2. Java headings (noisy)
-        try:
-            with open(tmp_path, "rb") as pdf_file:
-                java_url = "https://dependable-expression-production-3af1.up.railway.app/get/pdf-info/detect-chapter-headings"
-                response = requests.post(java_url, files={"file": (file.filename, pdf_file, file.content_type)})
-                headings = response.json()
-            log_data["java_headings"] = headings
-        except Exception as e:
-            log_data["java_error"] = str(e)
-            headings = []
+        # 5. Combine all headings (multi-source reconciliation)
+        all_headings = headings_font + bookmarks + ocr_headings_list
+        # Deduplicate
+        unique = {}
+        for h in all_headings:
+            key = h["title"].strip().lower() + "@" + str(h.get("pdf_page_index", 0))
+            if key not in unique:
+                unique[key] = h
+        all_headings = list(unique.values())
+        log_data["all_headings"] = all_headings
 
-        # 3. Chapter Matching: clear prompt, ignore noise
-        prompt2 = (
-            f"You are a data correlation expert. Your task is to assign the correct starting page number to a list of expected book chapters.\n"
-            f"You will be given two lists:\n"
-            f"1. `EXPECTED CHAPTERS`: A clean list of chapters extracted from the book's Table of Contents.\n"
-            f"2. `PDF HEADINGS FOUND`: A noisy list of all text headings found in the PDF. This list is messy and may contain irrelevant text from page headers, footers, or the index.\n\n"
-            f"**Your Task:** For each chapter in the `EXPECTED CHAPTERS` list, find the best matching entry in the `PDF HEADINGS FOUND` list and extract its `pageNumber`.\n"
-            f"Focus on matching the chapter title. Ignore the noisy, irrelevant headings.\n\n"
-            f"**EXPECTED CHAPTERS:**\n{json.dumps(real_chapters, indent=2)}\n\n"
-            f"**PDF HEADINGS FOUND:**\n{json.dumps(headings, indent=2)}\n\n"
-            "**Output Rules:**\n"
-            "- Return a single JSON array containing ALL chapters from the `EXPECTED CHAPTERS` list.\n"
-            "- Use the exact titles from the `EXPECTED CHAPTERS` list for the `chapter_full_title` field.\n"
-            "- If a good match is found, use its page number for `page_start`.\n"
-            "- If no plausible match is found for a chapter, use `0` as the `page_start`.\n"
-            "- The output format must be exactly: `[ { 'chapter_numerical_number': ..., 'chapter_full_title': '...', 'page_start': ... } ]`"
-        )
-        log_data["gemini_chapter_match_prompt"] = prompt2
-
-        try:
-            result2 = model.generate_content(prompt2)
-            matched_chapters = parse_gemini_json(result2.text)
-            log_data["gemini_chapter_match_output"] = result2.text
-        except Exception as e:
-            log_data["gemini_chapter_match_error"] = str(e)
-            matched_chapters = []
+        # 6. Fuzzy match TOC titles to detected headings, with offset correction
+        deduped = fuzzy_match_toc_to_headings(toc, all_headings)
+        log_data["deduped"] = deduped
 
         final_json = {
-            "book_title": book_info.get("book_title", ""),
-            "authors": book_info.get("authors", []),
-            "toc": []
+            "toc": deduped
         }
-        # Always use page numbers from Java backend
-        if isinstance(real_chapters, list):
-            # Build a lookup for headings by normalized title
-            def normalize(text):
-                return re.sub(r'\W+', '', text or '').lower()
-            headings_lookup = {normalize(h.get('title', h.get('chapter_full_title', ''))): h.get('pageNumber', 0) for h in headings if isinstance(h, dict)}
-            for ch in real_chapters:
-                chapter_title = ch.get("chapter_full_title", "")
-                norm_title = normalize(chapter_title)
-                page_number = headings_lookup.get(norm_title, 0)
-                final_json["toc"].append({
-                    "chapter_numerical_number": ch.get("chapter_numerical_number"),
-                    "chapter_full_title": chapter_title,
-                    "page_number": page_number
-                })
     except Exception as e:
         log_data["fatal_error"] = str(e)
         final_json = {"error": str(e)}

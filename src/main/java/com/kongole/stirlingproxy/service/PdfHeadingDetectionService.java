@@ -23,7 +23,7 @@ public class PdfHeadingDetectionService {
     // Removed unused PAGE_LABEL_PATTERN field
     // Simplified regex: only matches generic heading patterns, not specific chapter titles
     private static final Pattern HEADING_REGEX = Pattern.compile(
-        "^(CHAPTER|SECTION|PART|UNIT)\\s+([0-9]+|[IVXLCDM]+)?(\\s*[:\\-].*)?$",
+        "^(CHAPTER|SECTION|PART|UNIT|BOOK|VOLUME|MODULE)\\s+([0-9]+|[IVXLCDM]+)?(\\s*[:\\-].*)?$",
         Pattern.CASE_INSENSITIVE
     );
     private static final String[] EXTRA_KEYWORDS = {
@@ -60,116 +60,144 @@ public class PdfHeadingDetectionService {
     public List<Heading> detectHeadings(InputStream pdfStream, List<String> customKeywords) {
         List<Heading> candidateHeadings = new ArrayList<>();
         List<String> logs = new ArrayList<>();
+        int pageOffset = 0; // For offset correction
         try {
             try (PDDocument document = PDDocument.load(pdfStream)) {
-                // 1. Bookmarks/Outline Extraction
-                PDDocumentOutline outline = document.getDocumentCatalog().getDocumentOutline();
-                if (outline != null) {
-                    PDOutlineItem current = outline.getFirstChild();
-                    while (current != null) {
-                        String title = current.getTitle();
-                        int pageNum = -1;
-                        try {
-                            if (current.getDestination() != null) {
-                                if (current.getDestination() instanceof PDPageDestination) {
-                                    PDPageDestination pd = (PDPageDestination) current.getDestination();
-                                    if (pd.getPage() != null) {
-                                        pageNum = document.getPages().indexOf(pd.getPage()) + 1;
-                                    } else if (pd.getPageNumber() >= 0) {
-                                        pageNum = pd.getPageNumber() + 1;
-                                    }
-                                }
-                            } else if (current.getAction() instanceof org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo) {
-                                org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo action = (org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo) current.getAction();
-                                if (action.getDestination() instanceof PDPageDestination) {
-                                    PDPageDestination pd = (PDPageDestination) action.getDestination();
-                                    if (pd.getPage() != null) {
-                                        pageNum = document.getPages().indexOf(pd.getPage()) + 1;
-                                    } else if (pd.getPageNumber() >= 0) {
-                                        pageNum = pd.getPageNumber() + 1;
-                                    }
-                                }
-                            }
-                        } catch (Exception e) {
-                            pageNum = -1;
-                            logs.add("[ERROR] Failed to resolve outline page for title '" + title + "': " + e.getMessage());
-                        }
-                        if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
-                            float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
-                            candidateHeadings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
-                        }
-                        current = current.getNextSibling();
-                    }
-                }
-
-                // 2. TOC Page Parsing (first 15 pages)
-                PDFTextStripper tocStripper = new PDFTextStripper();
-                tocStripper.setStartPage(1);
-                tocStripper.setEndPage(Math.min(15, document.getNumberOfPages()));
-                String tocText = tocStripper.getText(document);
-                String[] tocLines = tocText.split("\r?\n");
-                Pattern tocPattern = Pattern.compile("^(.*?)(\\.\\.{2,}|\\s{2,})(\\d+)$");
-                for (String line : tocLines) {
-                    Matcher m = tocPattern.matcher(line.trim());
-                    if (m.find()) {
-                        String title = m.group(1).trim();
-                        int pageNum = Integer.parseInt(m.group(3));
-                        if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
-                            float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
-                            candidateHeadings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
-                        }
-                    }
-                }
-
-                // 3. Text-based Heading Detection (Font, Position, Regex, etc.)
-                float[] avgFontSize = {0};
-                int[] count = {0};
-                Map<Integer, Boolean> foundOnPage = new HashMap<>();
-                PDFTextStripper headingStripper = new PDFTextStripper() {
-                    float lastY = -1;
-                    int lastPage = -1;
-                    @Override
-                    protected void writeString(String string, List<org.apache.pdfbox.text.TextPosition> textPositions) {
-                        if (textPositions.isEmpty()) return;
-                        float fontSize = textPositions.get(0).getFontSizeInPt();
-                        String fontName = textPositions.get(0).getFont().getName();
-                        boolean isBold = false;
-                        if (fontName != null) {
-                            String fontNameLower = fontName.toLowerCase();
-                            isBold = fontNameLower.contains("bold") || fontNameLower.contains("black");
-                        }
-                        float y = textPositions.get(0).getY();
-                        int page = getCurrentPageNo();
-                        float whitespaceAbove = (lastPage == page) ? Math.abs(y - lastY) : 100;
-                        avgFontSize[0] += fontSize;
-                        count[0]++;
-                        String line = string.trim();
-                        boolean probable = isProbableHeadingUniversal(line, (int)fontSize, (int)y, (int)document.getPage(page - 1).getMediaBox().getHeight(),
-                                (int)whitespaceAbove, customKeywords, (count[0] > 0 ? (int)(avgFontSize[0] / count[0]) : 14), isBold);
-                        boolean fallback = false;
-                        if (!foundOnPage.getOrDefault(page, false)) {
-                            if ((isBold || fontSize >= (count[0] > 0 ? avgFontSize[0] / count[0] : 14)) && y < document.getPage(page - 1).getMediaBox().getHeight() * 0.33) {
-                                fallback = true;
-                                foundOnPage.put(page, true);
-                            }
-                        }
-                        if (probable || fallback) {
-                            float score = scoreHeading(line, fontSize, y,
-                                    document.getPage(page - 1).getMediaBox().getHeight(),
-                                    whitespaceAbove, customKeywords,
-                                    (count[0] > 0 ? avgFontSize[0] / count[0] : 14));
-                            candidateHeadings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
-                        }
-                        lastY = y;
-                        lastPage = page;
-                    }
-                };
-                headingStripper.setSortByPosition(true);
-                headingStripper.getText(document);
-
-                // 4. OCR Fallback
-                if (candidateHeadings.isEmpty()) {
+                boolean isImageBased = isImageBasedPDF(document);
+                // PDF type preprocessing: If image-based, use OCR only
+                if (isImageBased) {
                     candidateHeadings.addAll(detectHeadingsWithOCR(document, customKeywords));
+                } else {
+                    // 1. Bookmarks/Outline Extraction
+                    PDDocumentOutline outline = document.getDocumentCatalog().getDocumentOutline();
+                    if (outline != null) {
+                        PDOutlineItem current = outline.getFirstChild();
+                        while (current != null) {
+                            String title = current.getTitle();
+                            int pageNum = -1;
+                            try {
+                                if (current.getDestination() != null) {
+                                    if (current.getDestination() instanceof PDPageDestination) {
+                                        PDPageDestination pd = (PDPageDestination) current.getDestination();
+                                        if (pd.getPage() != null) {
+                                            pageNum = document.getPages().indexOf(pd.getPage()) + 1;
+                                        } else if (pd.getPageNumber() >= 0) {
+                                            pageNum = pd.getPageNumber() + 1;
+                                        }
+                                    }
+                                } else if (current.getAction() instanceof org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo) {
+                                    org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo action = (org.apache.pdfbox.pdmodel.interactive.action.PDActionGoTo) current.getAction();
+                                    if (action.getDestination() instanceof PDPageDestination) {
+                                        PDPageDestination pd = (PDPageDestination) action.getDestination();
+                                        if (pd.getPage() != null) {
+                                            pageNum = document.getPages().indexOf(pd.getPage()) + 1;
+                                        } else if (pd.getPageNumber() >= 0) {
+                                            pageNum = pd.getPageNumber() + 1;
+                                        }
+                                    }
+                                }
+                            } catch (Exception e) {
+                                pageNum = -1;
+                                logs.add("[ERROR] Failed to resolve outline page for title '" + title + "': " + e.getMessage());
+                            }
+                            if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
+                                float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
+                                candidateHeadings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
+                            }
+                            current = current.getNextSibling();
+                        }
+                    }
+
+                    // 2. TOC Page Parsing (first 15 pages, multi-line, roman numerals)
+                    PDFTextStripper tocStripper = new PDFTextStripper();
+                    tocStripper.setStartPage(1);
+                    tocStripper.setEndPage(Math.min(15, document.getNumberOfPages()));
+                    String tocText = tocStripper.getText(document);
+                    String[] tocLines = tocText.split("\r?\n");
+                    Pattern tocPattern = Pattern.compile("^(.*?)(\.\.{2,}|\s{2,})([0-9]+|[IVXLCDM]+)$", Pattern.CASE_INSENSITIVE);
+                    List<String> multiLineBuffer = new ArrayList<>();
+                    for (String line : tocLines) {
+                        String trimmed = line.trim();
+                        if (trimmed.isEmpty()) continue;
+                        Matcher m = tocPattern.matcher(trimmed);
+                        if (m.find()) {
+                            String title = m.group(1).trim();
+                            String pageStr = m.group(3);
+                            int pageNum = parsePageNumber(pageStr);
+                            // Multi-line support: combine buffer if present
+                            if (!multiLineBuffer.isEmpty()) {
+                                title = String.join(" ", multiLineBuffer) + " " + title;
+                                multiLineBuffer.clear();
+                            }
+                            if (isProbableHeadingUniversal(title, 14, 0, 800, 100, customKeywords, 14, false)) {
+                                float score = scoreHeading(title, 14, 0, 800, 100, customKeywords, 14);
+                                candidateHeadings.add(new Heading(title, pageNum, 14, 0, 100, 0, score));
+                            }
+                        } else {
+                            // Buffer non-matching lines for multi-line headings
+                            multiLineBuffer.add(trimmed);
+                        }
+                    }
+
+                    // 3. Text-based Heading Detection (Font, Position, Regex, etc., multi-line)
+                    float[] avgFontSize = {0};
+                    int[] count = {0};
+                    Map<Integer, Boolean> foundOnPage = new HashMap<>();
+                    List<String> headingBuffer = new ArrayList<>();
+                    PDFTextStripper headingStripper = new PDFTextStripper() {
+                        float lastY = -1;
+                        int lastPage = -1;
+                        @Override
+                        protected void writeString(String string, List<org.apache.pdfbox.text.TextPosition> textPositions) {
+                            if (textPositions.isEmpty()) return;
+                            float fontSize = textPositions.get(0).getFontSizeInPt();
+                            String fontName = textPositions.get(0).getFont().getName();
+                            boolean isBold = false;
+                            if (fontName != null) {
+                                String fontNameLower = fontName.toLowerCase();
+                                isBold = fontNameLower.contains("bold") || fontNameLower.contains("black");
+                            }
+                            float y = textPositions.get(0).getY();
+                            int page = getCurrentPageNo();
+                            float whitespaceAbove = (lastPage == page) ? Math.abs(y - lastY) : 100;
+                            avgFontSize[0] += fontSize;
+                            count[0]++;
+                            String line = string.trim();
+                            // Multi-line heading support
+                            if (line.endsWith("-")) {
+                                headingBuffer.add(line.substring(0, line.length() - 1));
+                                return;
+                            } else if (!headingBuffer.isEmpty()) {
+                                line = String.join("", headingBuffer) + line;
+                                headingBuffer.clear();
+                            }
+                            boolean probable = isProbableHeadingUniversal(line, (int)fontSize, (int)y, (int)document.getPage(page - 1).getMediaBox().getHeight(),
+                                    (int)whitespaceAbove, customKeywords, (count[0] > 0 ? (int)(avgFontSize[0] / count[0]) : 14), isBold);
+                            boolean fallback = false;
+                            if (!foundOnPage.getOrDefault(page, false)) {
+                                if ((isBold || fontSize >= (count[0] > 0 ? avgFontSize[0] / count[0] : 14)) && y < document.getPage(page - 1).getMediaBox().getHeight() * 0.33) {
+                                    fallback = true;
+                                    foundOnPage.put(page, true);
+                                }
+                            }
+                            if (probable || fallback) {
+                                float score = scoreHeading(line, fontSize, y,
+                                        document.getPage(page - 1).getMediaBox().getHeight(),
+                                        whitespaceAbove, customKeywords,
+                                        (count[0] > 0 ? avgFontSize[0] / count[0] : 14));
+                                candidateHeadings.add(new Heading(line, page, fontSize, y, whitespaceAbove, 0, score));
+                            }
+                            lastY = y;
+                            lastPage = page;
+                        }
+                    };
+                    headingStripper.setSortByPosition(true);
+                    headingStripper.getText(document);
+
+                    // 4. OCR Fallback (if still no headings)
+                    if (candidateHeadings.isEmpty()) {
+                        candidateHeadings.addAll(detectHeadingsWithOCR(document, customKeywords));
+                    }
                 }
 
                 // 5. Manual Mapping Override
@@ -179,7 +207,19 @@ public class PdfHeadingDetectionService {
                     }
                 }
 
-                // 6. Ensemble: Deduplicate and Sort
+                // 6. Offset Correction: Estimate offset between printed page numbers and PDF indices
+                pageOffset = estimatePageOffset(candidateHeadings, document.getNumberOfPages());
+                for (Heading h : candidateHeadings) {
+                    if (h.getPage() > 0) {
+                        // Correct page index
+                        int corrected = h.getPage() + pageOffset;
+                        if (corrected > 0 && corrected <= document.getNumberOfPages()) {
+                            h.page = corrected;
+                        }
+                    }
+                }
+
+                // 7. Multi-source reconciliation: Deduplicate and merge headings from all sources
                 Map<String, Heading> uniqueHeadings = new LinkedHashMap<>();
                 for (Heading h : candidateHeadings) {
                     String key = h.getText().trim().toLowerCase() + "@" + h.getPage();
@@ -195,6 +235,66 @@ public class PdfHeadingDetectionService {
             // ...existing error handling...
         }
         return new ArrayList<>();
+    }
+
+    // PDF type preprocessing: check if PDF is image-based
+    private boolean isImageBasedPDF(PDDocument document) {
+        try {
+            for (int i = 0; i < Math.min(5, document.getNumberOfPages()); i++) {
+                PDFTextStripper stripper = new PDFTextStripper();
+                stripper.setStartPage(i + 1);
+                stripper.setEndPage(i + 1);
+                String text = stripper.getText(document);
+                if (text != null && text.trim().length() > 50) {
+                    return false; // Has enough text
+                }
+            }
+        } catch (Exception ignore) {}
+        return true;
+    }
+
+    // Roman numeral and integer page number parser
+    private int parsePageNumber(String pageStr) {
+        try {
+            if (pageStr.matches("[0-9]+")) {
+                return Integer.parseInt(pageStr);
+            } else if (pageStr.matches("[IVXLCDM]+")) {
+                return romanToInt(pageStr);
+            }
+        } catch (Exception ignore) {}
+        return -1;
+    }
+
+    // Roman numeral to integer
+    private int romanToInt(String s) {
+        Map<Character, Integer> map = new HashMap<>();
+        map.put('I', 1); map.put('V', 5); map.put('X', 10); map.put('L', 50);
+        map.put('C', 100); map.put('D', 500); map.put('M', 1000);
+        int num = 0, prev = 0;
+        s = s.toUpperCase();
+        for (int i = s.length() - 1; i >= 0; i--) {
+            int val = map.getOrDefault(s.charAt(i), 0);
+            if (val < prev) num -= val;
+            else num += val;
+            prev = val;
+        }
+        return num;
+    }
+
+    // Estimate offset between printed page numbers and PDF indices
+    private int estimatePageOffset(List<Heading> headings, int totalPages) {
+        List<Integer> diffs = new ArrayList<>();
+        for (Heading h : headings) {
+            if (h.getPage() > 0 && h.getPage() <= totalPages) {
+                // Assume PDF index is close to printed page number
+                int diff = h.getPage() - headings.indexOf(h) - 1;
+                diffs.add(diff);
+            }
+        }
+        if (diffs.isEmpty()) return 0;
+        // Use median offset
+        Collections.sort(diffs);
+        return diffs.get(diffs.size() / 2);
     }
 
     // OCR fallback method
@@ -244,13 +344,17 @@ public class PdfHeadingDetectionService {
                                                int whitespaceAbove, List<String> customKeywords,
                                                int avgFont, boolean strict) {
         if (text == null || text.trim().isEmpty()) return false;
-        if (HEADING_REGEX.matcher(text.toUpperCase()).matches()) return true;
+        String trimmed = text.trim();
+        if (trimmed.length() < 8) return false; // Ignore headings shorter than 8 chars
+        if (trimmed.matches("^[=\\-]+$")) return false; // Ignore pure symbol lines
+        if (trimmed.equals(trimmed.toUpperCase()) && !HEADING_REGEX.matcher(trimmed.toUpperCase()).matches()) return false; // Skip all-uppercase non-chapter lines
+        if (HEADING_REGEX.matcher(trimmed.toUpperCase()).matches()) return true;
         for (String kw : EXTRA_KEYWORDS) {
-            if (text.equalsIgnoreCase(kw) || text.toLowerCase().startsWith(kw + " ")) return true;
+            if (trimmed.equalsIgnoreCase(kw) || trimmed.toLowerCase().startsWith(kw + " ")) return true;
         }
         if (customKeywords != null) {
             for (String kw : customKeywords) {
-                if (text.toLowerCase().contains(kw.toLowerCase())) return true;
+                if (trimmed.toLowerCase().contains(kw.toLowerCase())) return true;
             }
         }
         if (fontSize >= avgFont + 2 && whitespaceAbove > 20) return true;
