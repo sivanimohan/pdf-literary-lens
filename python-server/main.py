@@ -18,7 +18,10 @@ def extract_first_n_pages_text(pdf_path, n=15):
     for i in range(min(n, len(reader.pages))):
         text = reader.pages[i].extract_text() or ""
         texts.append(text)
-    return "\n".join(texts)
+    extracted = "\n".join(texts)
+    print("[DEBUG] Extracted text from first 15 pages:")
+    print(extracted[:2000])  # Print first 2000 chars for brevity
+    return extracted
 
 def extract_toc_with_gemini(text):
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
@@ -31,8 +34,10 @@ def extract_toc_with_gemini(text):
     data = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         response = requests.post(url, headers=headers, json=data)
+        print("[DEBUG] Gemini TOC API status:", response.status_code)
         if response.status_code == 200:
             result = response.json()
+            print("[DEBUG] Gemini TOC raw response:", result)
             candidates = result.get("candidates", [])
             if candidates:
                 text_response = candidates[0]["content"]["parts"][0]["text"]
@@ -41,9 +46,11 @@ def extract_toc_with_gemini(text):
                     if isinstance(toc_entries, list):
                         return toc_entries
                 except Exception:
+                    print("[DEBUG] Gemini TOC response not valid JSON:", text_response)
                     pass
         return []
-    except Exception:
+    except Exception as e:
+        print("[DEBUG] Gemini TOC API exception:", e)
         return []
 
 def get_java_headings(pdf_path):
@@ -52,12 +59,15 @@ def get_java_headings(pdf_path):
         files = {"file": f}
         try:
             response = requests.post(url, files=files, timeout=180)
+            print("[DEBUG] Java headings API status:", response.status_code)
             if response.status_code == 200:
                 headings_data = response.json()
+                print("[DEBUG] Java headings raw response:", headings_data)
                 if isinstance(headings_data, dict) and "headings" in headings_data:
                     return headings_data["headings"]
                 return headings_data
         except Exception as e:
+            print("[DEBUG] Java headings API exception:", e)
             return {"error": str(e)}
     return []
 
@@ -77,8 +87,10 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
     data = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         response = requests.post(url, headers=headers, json=data)
+        print("[DEBUG] Gemini match API status:", response.status_code)
         if response.status_code == 200:
             result = response.json()
+            print("[DEBUG] Gemini match raw response:", result)
             candidates = result.get("candidates", [])
             if candidates:
                 text_response = candidates[0]["content"]["parts"][0]["text"]
@@ -87,9 +99,11 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
                     if isinstance(final_chapters, list):
                         return final_chapters
                 except Exception:
+                    print("[DEBUG] Gemini match response not valid JSON:", text_response)
                     pass
         return []
-    except Exception:
+    except Exception as e:
+        print("[DEBUG] Gemini match API exception:", e)
         return []
 
 @app.post("/extract-toc")
