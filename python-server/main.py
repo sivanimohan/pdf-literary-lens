@@ -1,63 +1,12 @@
 import re
 import requests
 import tempfile
+import json
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from PyPDF2 import PdfReader
 
 app = FastAPI()
-
-def parse_roman(s):
-    roman_map = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
-    s = s.upper()
-    num, prev = 0, 0
-    for c in reversed(s):
-        val = roman_map.get(c, 0)
-        if val < prev:
-            num -= val
-        else:
-            num += val
-        prev = val
-    return num if num > 0 else None
-
-def parse_page_number(s):
-    if isinstance(s, int):
-        return s
-    if isinstance(s, str):
-        if s.isdigit():
-            return int(s)
-        elif re.match(r'^[IVXLCDM]+$', s, re.I):
-            return parse_roman(s)
-    return None
-
-def extract_toc(pdf_path, max_pages=15):
-    reader = PdfReader(pdf_path)
-    toc_entries = []
-    multi_line_buffer = []
-    toc_pattern = re.compile(r"^(.*?)(\.{2,}|\s{2,})([0-9]+|[IVXLCDM]+)$", re.I)
-
-    for i in range(min(max_pages, len(reader.pages))):
-        text = reader.pages[i].extract_text() or ""
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-
-            m = toc_pattern.match(line)
-            if m:
-                title = m.group(1).strip()
-                page_str = m.group(3)
-                page_num = parse_page_number(page_str)
-
-                if multi_line_buffer:
-                    title = " ".join(multi_line_buffer) + " " + title
-                    multi_line_buffer = []
-
-                toc_entries.append({"chapter_title": title, "printed_page_number": page_num})
-            else:
-                multi_line_buffer.append(line)
-
-    return toc_entries
 
 def extract_first_n_pages_text(pdf_path, n=15):
     reader = PdfReader(pdf_path)
@@ -66,6 +15,32 @@ def extract_first_n_pages_text(pdf_path, n=15):
         text = reader.pages[i].extract_text() or ""
         texts.append(text)
     return "\n".join(texts)
+
+def extract_toc_with_gemini(text, gemini_api_key):
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + gemini_api_key
+    prompt = (
+        "Given the following text from the first 15 pages of a book PDF, extract the table of contents as a list of chapters. "
+        "For each chapter, return a JSON object with 'chapter_title' and 'printed_page_number'. "
+        "If the TOC is not present, return an empty list.\nText:\n" + text
+    )
+    headers = {"Content-Type": "application/json"}
+    data = {"contents": [{"parts": [{"text": prompt}]}]}
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            result = response.json()
+            candidates = result.get("candidates", [])
+            if candidates:
+                text_response = candidates[0]["content"]["parts"][0]["text"]
+                try:
+                    toc_entries = json.loads(text_response)
+                    if isinstance(toc_entries, list):
+                        return toc_entries
+                except Exception:
+                    pass
+        return []
+    except Exception:
+        return []
 
 def get_java_headings(pdf_path):
     url = "https://dependable-expression-production-3af1.up.railway.app/get/pdf-info/detect-chapter-headings"
@@ -78,22 +53,21 @@ def get_java_headings(pdf_path):
                 if isinstance(headings_data, dict) and "headings" in headings_data:
                     return headings_data["headings"]
                 return headings_data
-        except Exception:
-            return []
+        except Exception as e:
+            return {"error": str(e)}
     return []
 
 def match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book_title):
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + gemini_api_key
-    # Use your natural prompt exactly as you wrote it
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + gemini_api_key
     prompt = (
-        f"Here is a list of chapters from this book: {book_title}\n\n"
-        "[TOC LIST]\n" +
-        str(toc) +
-        "\nNow your job is to look in the dataset below, and find the page number where each chapter starts. Ignore the noise, just for the chapter titles and assign it the correct page number. Be mindful that:\n\n"
+        f"Here is a list of chapters from this book: {book_title}\n\n[TOC LIST]\n"
+        + str(toc)
+        + "\nNow your job is to look in the dataset below, and find the page number where each chapter starts. Ignore the noise, just for the chapter titles and assign it the correct page number. Be mindful that:\n\n"
         "- In some cases there might be minor differences of the wording, that's ok, as long as it's clearly referring to the same chapter.\n\n"
         "- In some cases, you may see that the chapter name is divided across 2 entries, that's just a parsing error, but you're still able to identify the chapter by recognizing that the name is split across 2 entries.\n\n"
         "- Where there is some ambiguity, make reasonable guesses that will make the overall TOC make sense. For instance if you're struggling to match a particular chapter and there are 2 possibilities for that chapter, but one of them makes it very close to the start of another chapter, meaning that the chapter is very short compared to all others, that's suggestive that's the wrong one. You can use similar heuristics. But ONLY for those that aren't clear from the first place, which should be most of them.\n\n"
-        "[JAVA HEADINGS LIST]\n" + str(java_headings)
+        "[JAVA HEADINGS LIST]\n"
+        + str(java_headings)
     )
     headers = {"Content-Type": "application/json"}
     data = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -104,17 +78,9 @@ def match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book
             candidates = result.get("candidates", [])
             if candidates:
                 text_response = candidates[0]["content"]["parts"][0]["text"]
-                import json
                 try:
                     final_chapters = json.loads(text_response)
-                    # Only accept valid output format
-                    if isinstance(final_chapters, list) and all(
-                        isinstance(ch, dict) and "title" in ch and "pageNumber" in ch and "level" in ch for ch in final_chapters
-                    ):
-                        final_chapters = [
-                            ch for ch in final_chapters
-                            if isinstance(ch["pageNumber"], int) and ch["pageNumber"] >= 0
-                        ]
+                    if isinstance(final_chapters, list):
                         return final_chapters
                 except Exception:
                     pass
@@ -122,61 +88,62 @@ def match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book
     except Exception:
         return []
 
+@app.post("/extract-toc")
+async def extract_toc_endpoint(file: UploadFile = File(...), gemini_api_key: str = ""):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+        first_15_text = extract_first_n_pages_text(tmp_path, n=15)
+        toc = extract_toc_with_gemini(first_15_text, gemini_api_key) if gemini_api_key else []
+        return JSONResponse(content={"toc": toc})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)})
+
+@app.post("/match-toc-java")
+async def match_toc_java_endpoint(
+    file: UploadFile = File(...),
+    gemini_api_key: str = "",
+    book_title: str = "Unknown Title",
+    author: str = "Unknown Author"
+):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+        first_15_text = extract_first_n_pages_text(tmp_path, n=15)
+        toc = extract_toc_with_gemini(first_15_text, gemini_api_key) if gemini_api_key else []
+        java_headings = get_java_headings(tmp_path)
+        final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book_title) if gemini_api_key else []
+        final_json = {
+            "book_title": book_title,
+            "authors": [author],
+            "toc": final_chapters
+        }
+        return JSONResponse(content=final_json)
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)})
+
 @app.post("/process-pdf")
 async def process_pdf(
     file: UploadFile = File(...),
     gemini_api_key: str = "",
-    max_toc_pages: int = 15
+    book_title: str = "Unknown Title",
+    author: str = "Unknown Author"
 ):
     try:
-        # Step 1: Save PDF file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
-
-        # Step 2: Get headings from Java backend (Colab workflow step 1)
+        first_15_text = extract_first_n_pages_text(tmp_path, n=15)
+        toc = extract_toc_with_gemini(first_15_text, gemini_api_key) if gemini_api_key else []
         java_headings = get_java_headings(tmp_path)
-
-        # Step 3: Extract TOC from PDF (Colab workflow step 2)
-        toc_entries = extract_toc(tmp_path, max_pages=max_toc_pages)
-
-        # Step 4: Extract first 15 pages' text (Colab workflow step 2.1)
-        first_15_text = extract_first_n_pages_text(tmp_path, n=max_toc_pages)
-
-        # Step 5: Extract book title from metadata (for prompt, Colab workflow step 2.2)
-        reader = PdfReader(tmp_path)
-        book_title = reader.metadata.title if reader.metadata and reader.metadata.title else "Unknown Title"
-
-        # Step 6: Match TOC with Java headings using Gemini (Colab workflow step 3)
-        toc_list = toc_entries
-        if gemini_api_key:
-            gemini_toc = match_toc_with_java_headings_gemini(toc_list, java_headings, gemini_api_key, book_title)
-            if gemini_toc and isinstance(gemini_toc, list) and len(gemini_toc) > 0:
-                return JSONResponse(content=gemini_toc)
-
-        # Step 7: Fallback to TOC extraction in required format
-        output = []
-        for toc in toc_entries:
-            if (
-                toc.get("chapter_title") and 
-                isinstance(toc.get("printed_page_number"), int) and 
-                toc["printed_page_number"] >= 0
-            ):
-                output.append({
-                    "title": toc["chapter_title"],
-                    "pageNumber": toc["printed_page_number"],
-                    "level": 1
-                })
-        if not output and java_headings:
-            for h in java_headings:
-                title = h.get("title") or h.get("text")
-                page_num = h.get("pageNumber")
-                if title and isinstance(page_num, int) and page_num >= 0:
-                    output.append({
-                        "title": title,
-                        "pageNumber": page_num,
-                        "level": 1
-                    })
-        return JSONResponse(content=output)
+        final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book_title) if gemini_api_key else []
+        final_json = {
+            "book_title": book_title,
+            "authors": [author],
+            "toc": final_chapters
+        }
+        return JSONResponse(content=final_json)
     except Exception as e:
         return JSONResponse(content={"error": str(e)})
