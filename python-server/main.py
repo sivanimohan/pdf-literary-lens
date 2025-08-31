@@ -1,5 +1,6 @@
 import requests
 import difflib
+from PyPDF2 import PdfReader
 def get_java_headings(pdf_path):
     # Send PDF to Java backend and get chapter headings
     url = "https://dependable-expression-production-3af1.up.railway.app/get/pdf-info/detect-chapter-headings"
@@ -12,28 +13,34 @@ def get_java_headings(pdf_path):
         except Exception:
             # If error, just return empty list for headings
             return []
-def match_toc_to_java_headings(toc, java_headings, pdf_path):
+def match_toc_to_java_headings(toc, java_headings, pdf_path, fuzzy_cutoff=0.7):
     matched = []
     java_titles = [h.get("text", "") for h in java_headings]
+    offset_list = []
     for idx, entry in enumerate(toc):
         title = entry.get("chapter_title")
         printed_page = entry.get("printed_page_number")
-        # Fuzzy match to any Java heading
-        match = difflib.get_close_matches(title, java_titles, n=1, cutoff=0.7)
-        if match:
-            pdf_page = find_pdf_page_for_printed_number(pdf_path, printed_page)
-            matched.append({
-                "chapter_numerical_number": idx + 1 if entry.get("chapter_numerical_number") is None else entry.get("chapter_numerical_number"),
-                "chapter_full_title": title,
-                "page_start": pdf_page if pdf_page is not None else printed_page
-            })
+        match = difflib.get_close_matches(title, java_titles, n=1, cutoff=fuzzy_cutoff)
+        strategy = "fuzzy match" if match else "TOC fallback"
+        pdf_page = find_pdf_page_for_printed_number(pdf_path, printed_page)
+        if match and pdf_page is not None:
+            offset_list.append(pdf_page - printed_page)
+        matched.append({
+            "chapter_numerical_number": idx + 1 if entry.get("chapter_numerical_number") is None else entry.get("chapter_numerical_number"),
+            "chapter_full_title": title,
+            "page_start": pdf_page if pdf_page is not None else printed_page,
+            "matching_strategy": strategy
+        })
+    # Offset correction
+    offset_warning = None
+    if offset_list:
+        if all(x == offset_list[0] for x in offset_list):
+            for ch in matched:
+                if ch["page_start"] is not None:
+                    ch["page_start"] = ch["page_start"] - offset_list[0]
         else:
-            matched.append({
-                "chapter_numerical_number": entry.get("chapter_numerical_number"),
-                "chapter_full_title": title,
-                "page_start": printed_page
-            })
-    return matched
+            offset_warning = f"Inconsistent offset detected: {offset_list}"
+    return matched, offset_warning
 import re
 
 
@@ -160,11 +167,16 @@ from PyPDF2 import PdfReader
 app = FastAPI()
 
 @app.post("/process-pdf")
-async def process_pdf(file: UploadFile = File(...)):
+async def process_pdf(file: UploadFile = File(...), fuzzy_cutoff: float = 0.7):
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
+
+        # Metadata extraction
+        reader = PdfReader(tmp_path)
+        book_title = reader.metadata.title if reader.metadata and reader.metadata.title else "Unknown Title"
+        authors = [reader.metadata.author] if reader.metadata and reader.metadata.author else ["Unknown Author"]
 
         # 1. Extract TOC from first 15 pages
         toc = extract_toc(tmp_path, max_pages=15)
@@ -173,16 +185,16 @@ async def process_pdf(file: UploadFile = File(...)):
         java_headings = get_java_headings(tmp_path)
 
         # 3. Compare TOC entries with Java headings, keep only matched
-        toc_entries = match_toc_to_java_headings(toc, java_headings, tmp_path)
+        toc_entries, offset_warning = match_toc_to_java_headings(toc, java_headings, tmp_path, fuzzy_cutoff)
 
         # 4. Compose final output
-        book_title = "Unknown Title"  # Optionally extract from metadata
-        authors = ["Unknown Author"] # Optionally extract from metadata
         final_json = {
             "book_title": book_title,
             "authors": authors,
             "toc": toc_entries
         }
+        if offset_warning:
+            final_json["offset_warning"] = offset_warning
         return JSONResponse(content=final_json)
     except Exception as e:
         final_json = {"error": str(e)}
