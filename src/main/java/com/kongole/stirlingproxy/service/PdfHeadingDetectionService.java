@@ -114,7 +114,7 @@ public class PdfHeadingDetectionService {
                     tocStripper.setEndPage(Math.min(15, document.getNumberOfPages()));
                     String tocText = tocStripper.getText(document);
                     String[] tocLines = tocText.split("\r?\n");
-                    Pattern tocPattern = Pattern.compile("^(.*?)(\.\.{2,}|\s{2,})([0-9]+|[IVXLCDM]+)$", Pattern.CASE_INSENSITIVE);
+                        Pattern tocPattern = Pattern.compile("^(.*?)(\\.{2,}|\\s{2,})([0-9]+|[IVXLCDM]+)$", Pattern.CASE_INSENSITIVE);
                     List<String> multiLineBuffer = new ArrayList<>();
                     for (String line : tocLines) {
                         String trimmed = line.trim();
