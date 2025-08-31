@@ -211,12 +211,12 @@ public class PdfHeadingDetectionService {
                 if (cleaned.toLowerCase().contains(kw.toLowerCase())) return true;
             }
         }
-    // Universal heading heuristics (relaxed)
-    if (cleaned.equals(cleaned.toUpperCase()) && cleaned.split("\\s+").length <= 14 && cleaned.length() > 2) return true;
-    if ((isBold || fontSize >= avgFont) && yPos < pageHeight * 0.50) return true;
-    if (whitespaceAbove > 8 && (fontSize >= avgFont - 1 || isBold)) return true;
-    if (fontSize >= avgFont + 2) return true;
-    if (cleaned.matches("^[A-Z][A-Za-z0-9 ,:;\\-]{0,80}$") && yPos < pageHeight * 0.60) return true;
+    // --- TIGHTENED HEURISTICS ---
+    // Only accept headings with at least 3 words or 20+ characters
+    if (cleaned.split("\\s+").length < 3 && cleaned.length() < 20) return false;
+    // Only accept if bold and at top of page and long enough
+    if ((isBold || fontSize >= avgFont + 2) && yPos < pageHeight * 0.33 && cleaned.length() > 10) return true;
+    // Accept standard back matter headings
     if (cleaned.matches("^(APPENDIX|GLOSSARY|BIBLIOGRAPHY|INDEX|REFERENCES|ACKNOWLEDGMENTS?)($|[ .:,-])")) return true;
     return false;
     }
