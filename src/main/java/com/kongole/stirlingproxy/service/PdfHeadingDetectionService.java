@@ -2,6 +2,8 @@ package com.kongole.stirlingproxy.service;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.*;
+import org.apache.pdfbox.text.PDFTextStripper;
+import java.util.regex.Matcher;
 import org.apache.pdfbox.pdmodel.interactive.documentnavigation.destination.PDPageDestination;
 import java.io.InputStream;
 import java.util.*;
@@ -106,7 +108,7 @@ public class PdfHeadingDetectionService {
                 tocStripper.setEndPage(Math.min(15, document.getNumberOfPages()));
                 String tocText = tocStripper.getText(document);
                 String[] tocLines = tocText.split("\r?\n");
-                Pattern tocPattern = Pattern.compile("^(.*?)(\.\.{2,}|\s{2,})(\d+)$");
+                Pattern tocPattern = Pattern.compile("^(.*?)(\\.\\.{2,}|\\s{2,})(\\d+)$");
                 for (String line : tocLines) {
                     Matcher m = tocPattern.matcher(line.trim());
                     if (m.find()) {
@@ -193,6 +195,8 @@ public class PdfHeadingDetectionService {
             // ...existing error handling...
         }
         return new ArrayList<>();
+    }
+
     // OCR fallback method
     private List<Heading> detectHeadingsWithOCR(PDDocument document, List<String> customKeywords) {
         List<Heading> headings = new ArrayList<>();
@@ -215,7 +219,6 @@ public class PdfHeadingDetectionService {
             }
         } catch (Exception ignore) {}
         return headings;
-    }
     }
 
     private float scoreHeading(String text, float fontSize, float yPos, float pageHeight,
