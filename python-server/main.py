@@ -90,6 +90,67 @@ def get_java_headings(pdf_path):
             return {"error": str(e)}
     return []
 
+def extract_title_and_author(text):
+    # Extract book title and author from the first 15 pages of text
+    # Common pattern: lines with "Title", "Book Title", "Author", etc.
+    title = None
+    author = None
+
+    # Simple regex patterns, can be tweaked for better accuracy
+    title_patterns = [
+        r"^(?:Book\s+Title|Title):\s*(.+)$",
+        r"^(.+)\n(?:by|By)\s+([^\n]+)",  # Title on one line, "by Author" on next
+        r"^(.+)\nAuthor[s]?:\s*([^\n]+)"
+    ]
+    author_patterns = [
+        r"^(?:Author[s]?|By):\s*(.+)$"
+    ]
+
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        # Try title patterns
+        for pat in title_patterns:
+            match = re.match(pat, line.strip())
+            if match:
+                if pat == title_patterns[1] or pat == title_patterns[2]:
+                    title = match.group(1).strip()
+                    author = match.group(2).strip()
+                else:
+                    title = match.group(1).strip()
+        # Try author patterns
+        for pat in author_patterns:
+            match = re.match(pat, line.strip())
+            if match:
+                author = match.group(1).strip()
+        # If one line has "by Author" pattern
+        if re.match(r"^by\s+([^\n]+)", line.strip(), re.IGNORECASE) and i > 0 and not author:
+            prev_line = lines[i-1].strip()
+            title = prev_line
+            author = re.sub(r"^by\s+", "", line.strip(), flags=re.IGNORECASE)
+
+    # As a fallback, try to find first non-empty line as title, next "by"/"author" as author
+    if not title:
+        for line in lines:
+            if len(line.strip()) > 6:
+                title = line.strip()
+                break
+    if not author:
+        for line in lines:
+            m = re.match(r"^by\s+(.+)$", line.strip(), re.IGNORECASE)
+            if m:
+                author = m.group(1).strip()
+                break
+            m2 = re.match(r"^author[s]?:\s*(.+)$", line.strip(), re.IGNORECASE)
+            if m2:
+                author = m2.group(1).strip()
+                break
+
+    if not title:
+        title = "Unknown Title"
+    if not author:
+        author = "Unknown Author"
+    return title, author
+
 def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
     prompt = (
@@ -138,7 +199,9 @@ async def extract_toc_endpoint(file: UploadFile = File(...)):
             tmp_path = tmp.name
         first_15_text = extract_first_n_pages_text(tmp_path, n=15)
         toc = extract_toc_with_gemini(first_15_text) if GEMINI_API_KEY else []
-        return JSONResponse(content={"toc": toc})
+        # Extract book title and author
+        title, author = extract_title_and_author(first_15_text)
+        return JSONResponse(content={"book_title": title, "authors": [author], "toc": toc})
     except Exception as e:
         return JSONResponse(content={"error": str(e)})
 
@@ -153,6 +216,10 @@ async def match_toc_java_endpoint(
             tmp.write(await file.read())
             tmp_path = tmp.name
         first_15_text = extract_first_n_pages_text(tmp_path, n=15)
+        # Extract book title and author
+        title_extracted, author_extracted = extract_title_and_author(first_15_text)
+        book_title = title_extracted if title_extracted != "Unknown Title" else book_title
+        author = author_extracted if author_extracted != "Unknown Author" else author
         toc = extract_toc_with_gemini(first_15_text) if GEMINI_API_KEY else []
         java_headings = get_java_headings(tmp_path)
         final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, book_title) if GEMINI_API_KEY else []
@@ -176,6 +243,10 @@ async def process_pdf(
             tmp.write(await file.read())
             tmp_path = tmp.name
         first_15_text = extract_first_n_pages_text(tmp_path, n=15)
+        # Extract book title and author
+        title_extracted, author_extracted = extract_title_and_author(first_15_text)
+        book_title = title_extracted if title_extracted != "Unknown Title" else book_title
+        author = author_extracted if author_extracted != "Unknown Author" else author
         toc = extract_toc_with_gemini(first_15_text) if GEMINI_API_KEY else []
         java_headings = get_java_headings(tmp_path)
         final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, book_title) if GEMINI_API_KEY else []
