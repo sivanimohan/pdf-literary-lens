@@ -3,7 +3,6 @@ import difflib
 def get_java_headings(pdf_path):
     # Send PDF to Java backend and get chapter headings
     url = "https://dependable-expression-production-3af1.up.railway.app/get/pdf-info/detect-chapter-headings"
-  # Update to your actual endpoint
     with open(pdf_path, "rb") as f:
         files = {"file": f}
         try:
@@ -11,20 +10,8 @@ def get_java_headings(pdf_path):
             if response.status_code == 200:
                 return response.json().get("headings", [])
         except Exception:
-            # ...existing code...
-            try:
-                book_title = "Unknown Title"  # Optionally extract from metadata
-                toc = extract_toc(pdf_path, max_pages=15)  # Extract TOC before using
-                java_headings = []  # Provide a default value or fetch from another source if possible
-                toc_list = match_toc_to_java_headings(toc, java_headings, pdf_path)
-                final_json = {
-                    "book_title": book_title,
-                    "chapters": toc_list
-                }
-                return JSONResponse(content=final_json)
-            except Exception as e:
-                final_json = {"error": str(e)}
-                return JSONResponse(content=final_json)
+            # If error, just return empty list for headings
+            return []
 def match_toc_to_java_headings(toc, java_headings, pdf_path):
     matched = []
     java_titles = [h.get("text", "") for h in java_headings]
