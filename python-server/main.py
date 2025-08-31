@@ -84,7 +84,7 @@ def get_java_headings(pdf_path):
 
 def match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book_title):
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + gemini_api_key
-    # Replace book name dynamically in the prompt
+    # Use your natural prompt exactly as you wrote it
     prompt = (
         f"Here is a list of chapters from this book: {book_title}\n\n"
         "[TOC LIST]\n" +
@@ -107,7 +107,15 @@ def match_toc_with_java_headings_gemini(toc, java_headings, gemini_api_key, book
                 import json
                 try:
                     final_chapters = json.loads(text_response)
-                    return final_chapters
+                    # Only accept valid output format
+                    if isinstance(final_chapters, list) and all(
+                        isinstance(ch, dict) and "title" in ch and "pageNumber" in ch and "level" in ch for ch in final_chapters
+                    ):
+                        final_chapters = [
+                            ch for ch in final_chapters
+                            if isinstance(ch["pageNumber"], int) and ch["pageNumber"] >= 0
+                        ]
+                        return final_chapters
                 except Exception:
                     pass
         return []
@@ -121,46 +129,49 @@ async def process_pdf(
     max_toc_pages: int = 15
 ):
     try:
+        # Step 1: Save PDF file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
 
-        # 1. Send PDF to Java backend, get headings
+        # Step 2: Get headings from Java backend (Colab workflow step 1)
         java_headings = get_java_headings(tmp_path)
 
-        # 2. Get the TOC from the PDF
+        # Step 3: Extract TOC from PDF (Colab workflow step 2)
         toc_entries = extract_toc(tmp_path, max_pages=max_toc_pages)
 
-        # 2.1 Get the first 15 pages of the PDF
+        # Step 4: Extract first 15 pages' text (Colab workflow step 2.1)
         first_15_text = extract_first_n_pages_text(tmp_path, n=max_toc_pages)
 
-        # 2.2 Get book title from metadata if available
+        # Step 5: Extract book title from metadata (for prompt, Colab workflow step 2.2)
         reader = PdfReader(tmp_path)
         book_title = reader.metadata.title if reader.metadata and reader.metadata.title else "Unknown Title"
 
-        # 2.3 If Gemini key provided, ask Gemini to give chapters based on TOC
+        # Step 6: Match TOC with Java headings using Gemini (Colab workflow step 3)
         toc_list = toc_entries
         if gemini_api_key:
             gemini_toc = match_toc_with_java_headings_gemini(toc_list, java_headings, gemini_api_key, book_title)
-            # If Gemini returned valid chapters, use those as output
-            if gemini_toc and isinstance(gemini_toc, list):
+            if gemini_toc and isinstance(gemini_toc, list) and len(gemini_toc) > 0:
                 return JSONResponse(content=gemini_toc)
 
-        # Fallback: Output TOC in the requested format if Gemini is not used
+        # Step 7: Fallback to TOC extraction in required format
         output = []
         for toc in toc_entries:
-            if toc.get("chapter_title") and toc.get("printed_page_number"):
+            if (
+                toc.get("chapter_title") and 
+                isinstance(toc.get("printed_page_number"), int) and 
+                toc["printed_page_number"] >= 0
+            ):
                 output.append({
                     "title": toc["chapter_title"],
                     "pageNumber": toc["printed_page_number"],
                     "level": 1
                 })
-        # If no TOC, fallback to Java headings
         if not output and java_headings:
             for h in java_headings:
                 title = h.get("title") or h.get("text")
                 page_num = h.get("pageNumber")
-                if title and page_num:
+                if title and isinstance(page_num, int) and page_num >= 0:
                     output.append({
                         "title": title,
                         "pageNumber": page_num,
