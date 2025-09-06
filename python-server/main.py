@@ -25,7 +25,7 @@ def parse_chapter_list(text_response):
         chapters.append({
             "chapter_number": int(match.group(1)),
             "chapter_title": match.group(2).strip(),
-            "printed_page_number": int(match.group(3))
+            "page_number": int(match.group(3))
         })
     return chapters
 
@@ -95,7 +95,7 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
         "- In some cases there might be minor differences of the wording, that's ok, as long as it's clearly referring to the same chapter.\n\n"
         "- In some cases, you may see that the chapter name is divided across 2 entries, that's just a parsing error, but you're still able to identify the chapter by recognizing that the name is split across 2 entries.\n\n"
         "- Where there is some ambiguity, make reasonable guesses that will make the overall TOC make sense. For instance if you're struggling to match a particular chapter and there are 2 possibilities for that chapter, but one of them makes it very close to the start of another chapter, meaning that the chapter is very short compared to all others, that's suggestive that's the wrong one. You can use similar heuristics. But ONLY for those that aren't clear from the first place, which should be most of them.\n\n"
-        "Return the result as a JSON list like this: [{\"chapter_title\": \"...\", \"printed_page_number\": ...}, ...]. "
+        "Return the result as a JSON list like this: [{\"chapter_title\": \"...\", \"page_number\": ...}, ...]. "
         "Do NOT use Markdown or plain text or bullet lists.\n\n"
         "[JAVA HEADINGS LIST]\n"
         + str(java_headings)
