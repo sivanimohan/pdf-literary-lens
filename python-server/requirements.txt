@@ -6,3 +6,6 @@ PyPDF2
 python-dotenv
 python-multipart
 pdf2image
+reportlab
+pillow
+pydantic
