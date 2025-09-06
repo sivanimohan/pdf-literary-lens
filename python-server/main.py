@@ -42,13 +42,13 @@ async def get_toc_from_new_logic(pdf_path: str):
         result_json = await toc_logic.process_pdf(pdf_path)
         if result_json and "toc_entries" in result_json:
             print("[DEBUG] Successfully extracted TOC using new image-based logic.")
-            return result_json["toc_entries"]
+            return result_json
         else:
             print("[DEBUG] New TOC extraction logic returned no entries.")
-            return []
+            return None
     except Exception as e:
         print(f"[DEBUG] An error occurred while running the new TOC logic: {e}")
-        return []
+        return None
 
 
 def get_java_headings(pdf_path):
@@ -76,6 +76,7 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
     # --- IMPORTANT CHANGE ---
     # Reformat the TOC to remove page numbers and other extra fields
     # before sending it to the final matching prompt.
+    print("[DEBUG] Raw TOC passed to final matching step:", toc)
     formatted_toc_for_prompt = [
         {
             "chapter_title": entry.get("chapter_title"),
@@ -83,7 +84,7 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
         }
         for entry in toc
     ]
-    print("[DEBUG] Formatted TOC for final prompt:", formatted_toc_for_prompt)
+    print("[DEBUG] Formatted TOC for final prompt (should NOT include page_number):", formatted_toc_for_prompt)
 
     prompt = (
         f"Here is a list of chapters from this book: {book_title}\n\n[TOC LIST]\n"
@@ -134,7 +135,8 @@ async def extract_toc_endpoint(file: UploadFile = File(...)):
             tmp.write(await file.read())
             tmp_path = tmp.name
         # Call the new TOC extraction logic
-        toc = await get_toc_from_new_logic(tmp_path)
+        result = await get_toc_from_new_logic(tmp_path)
+        toc = result["toc_entries"] if result and "toc_entries" in result else []
         return JSONResponse(content={"toc": toc})
     except Exception as e:
         return JSONResponse(content={"error": str(e)})
@@ -146,21 +148,23 @@ async def extract_toc_endpoint(file: UploadFile = File(...)):
 
 @app.post("/match-toc-java")
 async def match_toc_java_endpoint(
-    file: UploadFile = File(...),
-    book_title: str = "Unknown Title",
-    author: str = "Unknown Author"
+    file: UploadFile = File(...)
 ):
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
         # Call the new TOC extraction logic
-        toc = await get_toc_from_new_logic(tmp_path)
+        result = await get_toc_from_new_logic(tmp_path)
+        toc = result["toc_entries"] if result and "toc_entries" in result else []
+        metadata = result["metadata"] if result and "metadata" in result else {}
+        book_title = metadata.get("book_title") or "Unknown Title"
+        authors = metadata.get("authors") or ["Unknown Author"]
         java_headings = get_java_headings(tmp_path)
         final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, book_title) if GEMINI_API_KEY else []
         final_json = {
             "book_title": book_title,
-            "authors": [author],
+            "authors": authors,
             "toc": final_chapters
         }
         return JSONResponse(content=final_json)
@@ -173,21 +177,23 @@ async def match_toc_java_endpoint(
 
 @app.post("/process-pdf")
 async def process_pdf(
-    file: UploadFile = File(...),
-    book_title: str = "Unknown Title",
-    author: str = "Unknown Author"
+    file: UploadFile = File(...)
 ):
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
         # Call the new TOC extraction logic
-        toc = await get_toc_from_new_logic(tmp_path)
+        result = await get_toc_from_new_logic(tmp_path)
+        toc = result["toc_entries"] if result and "toc_entries" in result else []
+        metadata = result["metadata"] if result and "metadata" in result else {}
+        book_title = metadata.get("book_title") or "Unknown Title"
+        authors = metadata.get("authors") or ["Unknown Author"]
         java_headings = get_java_headings(tmp_path)
         final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, book_title) if GEMINI_API_KEY else []
         final_json = {
             "book_title": book_title,
-            "authors": [author],
+            "authors": authors,
             "toc": final_chapters
         }
         return JSONResponse(content=final_json)
