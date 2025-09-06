@@ -200,11 +200,13 @@ async def process_pdf(pdf_path):
     if not final_combined_toc and max_filled_fields <= 0:
         return None
 
-    final_combined_toc.sort(key=lambda item: item.get('page_number', 0))
+    # Filter out entries with None page_number before sorting
+    filtered_toc = [item for item in final_combined_toc if item.get('page_number') is not None]
+    filtered_toc.sort(key=lambda item: item['page_number'])
 
     deduplicated_toc = []
     seen_titles = set()
-    for item in final_combined_toc:
+    for item in filtered_toc:
         title = item.get('chapter_title', '').strip().lower()
         if title and title not in seen_titles:
             deduplicated_toc.append(item)
