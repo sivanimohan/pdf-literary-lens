@@ -161,12 +161,14 @@ async def match_toc_java_endpoint(
         book_title = metadata.get("book_title") or "Unknown Title"
         authors = metadata.get("authors") or ["Unknown Author"]
         java_headings = get_java_headings(tmp_path)
+        print("[DEBUG] Java headings for matching:", java_headings)
         final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, book_title) if GEMINI_API_KEY else []
         final_json = {
             "book_title": book_title,
             "authors": authors,
             "toc": final_chapters
         }
+        print("[DEBUG] Final API response:", final_json)
         return JSONResponse(content=final_json)
     except Exception as e:
         return JSONResponse(content={"error": str(e)})
@@ -190,12 +192,14 @@ async def process_pdf(
         book_title = metadata.get("book_title") or "Unknown Title"
         authors = metadata.get("authors") or ["Unknown Author"]
         java_headings = get_java_headings(tmp_path)
+        print("[DEBUG] Java headings for matching:", java_headings)
         final_chapters = match_toc_with_java_headings_gemini(toc, java_headings, book_title) if GEMINI_API_KEY else []
         final_json = {
             "book_title": book_title,
             "authors": authors,
             "toc": final_chapters
         }
+        print("[DEBUG] Final API response:", final_json)
         return JSONResponse(content=final_json)
     except Exception as e:
         return JSONResponse(content={"error": str(e)})
