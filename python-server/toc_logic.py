@@ -200,8 +200,17 @@ async def process_pdf(pdf_path):
     if not final_combined_toc and max_filled_fields <= 0:
         return None
 
-    # Filter out entries with None page_number before sorting
-    filtered_toc = [item for item in final_combined_toc if item.get('page_number') is not None]
+
+    # Convert all page_number values to int before sorting, skip if not possible
+    filtered_toc = []
+    for item in final_combined_toc:
+        page = item.get('page_number')
+        if page is not None:
+            try:
+                item['page_number'] = int(page)
+                filtered_toc.append(item)
+            except (ValueError, TypeError):
+                continue  # skip if page_number is not convertible to int
     filtered_toc.sort(key=lambda item: item['page_number'])
 
     deduplicated_toc = []
