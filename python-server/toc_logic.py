@@ -79,28 +79,30 @@ def log(msg):
 async def get_structured_data_from_images(model, image_paths):
     print(f"Processing a chunk of {len(image_paths)} images...")
     structured_prompt = """
-    Analyze the following book pages to extract metadata and the main table of contents.
-    Your response will be programmatically constrained to the JSON schema provided.
+Analyze the following book pages to extract metadata and the main table of contents.
+Your response will be programmatically constrained to the JSON schema provided.
 
-    The JSON object you return has two top-level keys: "metadata" and "toc_entries".
+The JSON object you return has two top-level keys: \"metadata\" and \"toc_entries\".
 
-    1.  **"metadata"**: This object contains the book's metadata.
-        * "book_title": The full title of the book.
-        * "authors": A list of all author names.
-        * "publishing_house": The name of the publisher.
-        * "publishing_year": The integer year of publication.
-        * If any metadata field is not found on the pages, its value MUST be null.
+1.  **\"metadata\"**: This object contains the book's metadata.
+    * \"book_title\": The full title of the book.
+    * \"authors\": A list of all author names.
+    * \"publishing_house\": The name of the publisher.
+    * \"publishing_year\": The integer year of publication.
+    * If any metadata field is not found on the pages, its value MUST be null.
 
-    2.  **"toc_entries"**: This is a JSON array containing ONLY THE MAIN, TOP-LEVEL CHAPTERS.
-        * **CRITICAL**: You MUST IGNORE indented sub-chapters. Main chapters are typically not indented and have larger page gaps between them. Do not include sub-chapters in the list.
-        * Each object in the array represents one main chapter and MUST have these four keys:
-            * "chapter_title": The string name of the chapter.
-            * "chapter_number": The integer chapter number. ONLY include this if the number is explicitly written (e.g., "1.", "Chapter 5"). You MUST NOT invent, assume, or count chapter numbers. If no number is written, the value MUST be null.
-            * "page_number": The integer page number.
-            * "reference_boolean": A boolean value. It MUST be `true` ONLY for sections explicitly titled "Bibliography" or "References". For all other entries (including "Index", "Appendix", "Coda", etc.), it MUST be `false`.
+2.  **\"toc_entries\"**: This is a JSON array containing ONLY THE MAIN, TOP-LEVEL CHAPTERS.
+    * **CRITICAL**: You MUST IGNORE indented sub-chapters. Main chapters are typically not indented and have larger page gaps between them. Do not include sub-chapters in the list.
+    * Each object in the array represents one main chapter and MUST have these four keys:
+        * \"chapter_title\": The string name of the chapter.
+        * \"chapter_number\": The integer chapter number. ONLY include this if the number is explicitly written (e.g., \"1.\", \"Chapter 5\"). You MUST NOT invent, assume, or count chapter numbers. If no number is written, the value MUST be null.
+        * \"page_number\": The integer page number.
+        * \"reference_boolean\": A boolean value. It MUST be `true` ONLY for sections explicitly titled \"Bibliography\" or \"References\". For all other entries (including \"Index\", \"Appendix\", \"Coda\", etc.), it MUST be `false`.
 
-    If no table of contents entries are found, "toc_entries" MUST be an empty list [].
-    """
+If no table of contents entries are found, \"toc_entries\" MUST be an empty list [].
+
+IMPORTANT: Return ONLY valid JSON. Do NOT include any markdown, explanations, or extra text. The output must be a single valid JSON object and nothing else.
+"""
 
     prompt_parts = [structured_prompt]
     for path in image_paths:
