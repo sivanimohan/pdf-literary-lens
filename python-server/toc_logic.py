@@ -1,4 +1,3 @@
-
 import sys
 import os
 import asyncio
@@ -32,6 +31,8 @@ else:
     print("GEMINI_API_KEY environment variable not set.")
 
 
+# --- Pydantic Data Models ---
+
 # Updated TocEntry model without 'chapter_number'
 class TocEntry(BaseModel):
     chapter_title: str
@@ -44,39 +45,12 @@ class BookMetadata(BaseModel):
     publishing_house: Optional[str]
     publishing_year: Optional[int]
 
-
 class ExtractionResult(BaseModel):
     metadata: BookMetadata
     toc_entries: List[TocEntry]
 
-def create_dummy_pdf(file_path):
-    print(f"Creating a dummy PDF at {file_path}...")
-    c = canvas.Canvas(file_path, pagesize=letter)
-    width, height = letter
-    c.drawString(100, height - 100, "LSD Psychotherapy by Stanislav Grof, MAPS Press, 2001")
-    c.showPage()
-    c.drawString(100, height - 100, "Table of Contents")
-    c.drawString(120, height - 140, "1. The First Chapter ............ 9")
-    c.drawString(140, height - 160, "A Sub-Chapter ............... 12")
-    c.drawString(120, height - 180, "2. The Second Chapter ........... 25")
-    c.showPage()
-    c.drawString(100, height-100, "Back Matter")
-    c.drawString(120, height - 140, "Appendix A .................. 140")
-    c.drawString(120, height - 160, "Bibliography .................. 150")
-    c.drawString(120, height - 180, "Index ......................... 165")
-    c.showPage()
-    for i in range(4, 21):
-        c.drawString(100, height - 100, f"This is page {i}.")
-        c.showPage()
-    c.save()
-    print("Dummy PDF created successfully.")
 
-LOG_LINES = []
-
-def log(msg):
-    print(msg)
-    LOG_LINES.append(msg)
-
+# --- Core Logic ---
 
 async def get_structured_data_from_images(model, image_paths: List[str]):
     """
@@ -142,7 +116,13 @@ IMPORTANT: Return ONLY valid JSON. Do NOT include any markdown, explanations, or
                 return f'{{"error": "API call failed", "details": "{error_str}"}}'
     return '{"error": "API call failed after all retries"}'
 
-async def process_pdf(pdf_path):
+
+async def process_pdf(pdf_path: str):
+    """
+    Extracts TOC and metadata from a PDF using a two-pass approach.
+    Pass 1 (Discovery): Uses a fast model to find pages containing the TOC.
+    Pass 2 (Verification): Uses a powerful model on only the identified pages for accurate extraction.
+    """
     if not API_KEY:
         print("Cannot proceed without a valid API Key.")
         return None
@@ -150,163 +130,117 @@ async def process_pdf(pdf_path):
     print("\nStep 1: Converting first 20 PDF pages to JPEG images...")
     output_dir = Path("pages")
     output_dir.mkdir(exist_ok=True)
+    
+    # Clean up old images before conversion
+    for old_image in output_dir.glob("*.jpg"):
+        old_image.unlink()
+
     images = convert_from_path(pdf_path, last_page=20, fmt='jpeg', output_folder=output_dir, output_file="page_")
     image_paths = sorted([str(p) for p in output_dir.glob("*.jpg")])
     print(f"Successfully converted {len(image_paths)} pages.")
 
-    # Use Gemini 2.5 Flash Lite only
-    model = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
+    # --- Pass 1: Discovery Pass with Flash Model ---
+    print("\n--- Starting Pass 1: Discovery (using gemini-2.5-flash) ---")
+    model_flash = genai.GenerativeModel(model_name="gemini-2.5-flash")
     chunk_size = 5
-    all_results_str = []
-    toc_found = False
+    discovery_tasks = []
+    
+    for i in range(0, len(image_paths), chunk_size):
+        chunk_paths = image_paths[i:i + chunk_size]
+        discovery_tasks.append(get_structured_data_from_images(model_flash, chunk_paths))
+    
+    discovery_results = await asyncio.gather(*discovery_tasks)
 
-    total_pages_to_scan = 20
-    pages_per_batch = 10
-    num_batches = (total_pages_to_scan + pages_per_batch - 1) // pages_per_batch
-    for i in range(num_batches):
-        start_page_index = i * pages_per_batch
-        end_page_index = start_page_index + pages_per_batch
-        batch_paths = image_paths[start_page_index:end_page_index]
-        if not batch_paths: break
-        print(f"\n--- Processing Batch {i+1} (Pages {start_page_index+1}-{min(end_page_index, len(image_paths))}) ---")
-        batch_chunks = [batch_paths[j:j + chunk_size] for j in range(0, len(batch_paths), chunk_size)]
-        tasks = [get_structured_data_from_images(model, chunk) for chunk in batch_chunks]
-        batch_results = await asyncio.gather(*tasks)
-        all_results_str.extend(batch_results)
-
+    toc_page_indices = set()
+    all_parsed_results_pass1 = []
+    for i, res_str in enumerate(discovery_results):
         try:
-            toc_found_in_batch = any(json.loads(res).get("toc_entries") for res in batch_results if "error" not in res.lower() and res.strip())
-            if toc_found_in_batch: toc_found = True
-            last_result_obj = json.loads(batch_results[-1]) if batch_results[-1].strip() else {}
-            is_last_chunk_empty = not last_result_obj.get("toc_entries")
-            if toc_found and is_last_chunk_empty:
-                print("\n--- ToC appears to have ended. Stopping scan early. ---")
-                break
+            res_json = json.loads(res_str)
+            all_parsed_results_pass1.append(res_json)
+            if res_json.get("toc_entries"):
+                start_index = i * chunk_size
+                end_index = start_index + chunk_size
+                # Add all page indices from this successful chunk
+                for page_idx in range(start_index, min(end_index, len(image_paths))):
+                    toc_page_indices.add(page_idx)
         except (json.JSONDecodeError, TypeError):
+            print(f"Warning: Could not parse JSON from discovery chunk {i+1}.")
             continue
+    
+    if not toc_page_indices:
+        print("\n--- Discovery Pass found no pages with TOC entries. Aborting. ---")
+        return None
 
-    print("\n--- Individual Chunk Results (for debugging) ---")
-    for i, result in enumerate(all_results_str):
-        print(f"\n[Result from Page Chunk {i*chunk_size+1}-{ (i+1)*chunk_size }]:\n{result}")
+    print(f"\n--- Discovery Pass identified {len(toc_page_indices)} potential TOC pages. ---")
+    
+    # --- Pass 2: Verification Pass with Pro Model ---
+    print("\n--- Starting Pass 2: Verification (using gemini-2.5-pro) ---")
+    model_pro = genai.GenerativeModel(model_name="gemini-2.5-pro")
+    
+    # Create a list of image paths from the discovered indices
+    targeted_image_paths = [image_paths[i] for i in sorted(list(toc_page_indices))]
+    
+    final_result_str = await get_structured_data_from_images(model_pro, targeted_image_paths)
 
-    all_parsed_results = []
-    for res_str in all_results_str:
-        try:
-            all_parsed_results.append(json.loads(res_str))
-        except (json.JSONDecodeError, TypeError):
-            continue
+    try:
+        final_data = json.loads(final_result_str)
+    except (json.JSONDecodeError, TypeError):
+        print("\n--- ❌ FINAL RESULT ---")
+        print("ERROR: Failed to parse the final JSON output from the Pro model.")
+        return None
 
+    # --- Final Consolidation ---
+    print("\n--- Consolidating final results ---")
+
+    # Although Pass 2 gives the definitive TOC, we can still pick the best metadata
+    # from the broader scan in Pass 1 for robustness.
     best_metadata = {}
     max_filled_fields = -1
-    for result in all_parsed_results:
+    for result in all_parsed_results_pass1:
+        metadata = result.get("metadata", {})
+        if metadata:
+            filled_count = sum(1 for value in metadata.values() if value is not None)
+            if filled_count > max_filled_fields:
+                max_filled_fields = filled_count
+                best_metadata = metadata
 
-        async def process_pdf(pdf_path: str):
-            """
-            Extracts TOC and metadata from a PDF using a two-pass approach.
-            Pass 1 (Discovery): Uses a fast model to find pages containing the TOC.
-            Pass 2 (Verification): Uses a powerful model on only the identified pages for accurate extraction.
-            """
-            if not API_KEY:
-                print("Cannot proceed without a valid API Key.")
-                return None
-
-            print("\nStep 1: Converting first 20 PDF pages to JPEG images...")
-            output_dir = Path("pages")
-            output_dir.mkdir(exist_ok=True)
+    # Get the high-quality TOC from the Verification Pass
+    final_combined_toc = final_data.get("toc_entries", [])
     
-            # Clean up old images before conversion
-            for old_image in output_dir.glob("*.jpg"):
-                old_image.unlink()
+    # Sort and deduplicate the final TOC
+    final_combined_toc.sort(key=lambda item: item.get('page_number', 0))
 
-            images = convert_from_path(pdf_path, last_page=20, fmt='jpeg', output_folder=output_dir, output_file="page_")
-            image_paths = sorted([str(p) for p in output_dir.glob("*.jpg")])
-            print(f"Successfully converted {len(image_paths)} pages.")
-
-            # --- Pass 1: Discovery Pass with Flash Model ---
-            print("\n--- Starting Pass 1: Discovery (using gemini-2.5-flash) ---")
-            model_flash = genai.GenerativeModel(model_name="gemini-2.5-flash")
-            chunk_size = 5
-            discovery_tasks = []
-    
-            for i in range(0, len(image_paths), chunk_size):
-                chunk_paths = image_paths[i:i + chunk_size]
-                discovery_tasks.append(get_structured_data_from_images(model_flash, chunk_paths))
-    
-            discovery_results = await asyncio.gather(*discovery_tasks)
-
-            toc_page_indices = set()
-            all_parsed_results_pass1 = []
-            for i, res_str in enumerate(discovery_results):
-                try:
-                    res_json = json.loads(res_str)
-                    all_parsed_results_pass1.append(res_json)
-                    if res_json.get("toc_entries"):
-                        start_index = i * chunk_size
-                        end_index = start_index + chunk_size
-                        # Add all page indices from this successful chunk
-                        for page_idx in range(start_index, min(end_index, len(image_paths))):
-                            toc_page_indices.add(page_idx)
-                except (json.JSONDecodeError, TypeError):
-                    print(f"Warning: Could not parse JSON from discovery chunk {i+1}.")
-                    continue
-    
-            if not toc_page_indices:
-                print("\n--- Discovery Pass found no pages with TOC entries. Aborting. ---")
-                return None
-
-            print(f"\n--- Discovery Pass identified {len(toc_page_indices)} potential TOC pages. ---")
-    
-            # --- Pass 2: Verification Pass with Pro Model ---
-            print("\n--- Starting Pass 2: Verification (using gemini-2.5-pro) ---")
-            model_pro = genai.GenerativeModel(model_name="gemini-2.5-pro")
-    
-            # Create a list of image paths from the discovered indices
-            targeted_image_paths = [image_paths[i] for i in sorted(list(toc_page_indices))]
-    
-            final_result_str = await get_structured_data_from_images(model_pro, targeted_image_paths)
-
-            try:
-                final_data = json.loads(final_result_str)
-            except (json.JSONDecodeError, TypeError):
-                print("\n--- ❌ FINAL RESULT ---")
-                print("ERROR: Failed to parse the final JSON output from the Pro model.")
-                return None
-
-            # --- Final Consolidation ---
-            print("\n--- Consolidating final results ---")
-
-            # Although Pass 2 gives the definitive TOC, we can still pick the best metadata
-            # from the broader scan in Pass 1 for robustness.
-            best_metadata = {}
-            max_filled_fields = -1
-            for result in all_parsed_results_pass1:
-                metadata = result.get("metadata", {})
-                if metadata:
-                    filled_count = sum(1 for value in metadata.values() if value is not None)
-                    if filled_count > max_filled_fields:
-                        max_filled_fields = filled_count
-                        best_metadata = metadata
-
-            # Get the high-quality TOC from the Verification Pass
-            final_combined_toc = final_data.get("toc_entries", [])
-    
-            # Sort and deduplicate the final TOC
-            final_combined_toc.sort(key=lambda item: item.get('page_number', 0))
-
-            deduplicated_toc = []
-            seen_titles = set()
-            for item in final_combined_toc:
-                title = item.get('chapter_title', '').strip().lower()
-                if title and title not in seen_titles:
-                    deduplicated_toc.append(item)
-                    seen_titles.add(title)
+    deduplicated_toc = []
+    seen_titles = set()
+    for item in final_combined_toc:
+        title = item.get('chapter_title', '').strip().lower()
+        if title and title not in seen_titles:
+            deduplicated_toc.append(item)
+            seen_titles.add(title)
             
-            final_result_obj = {
-                "metadata": best_metadata,
-                "toc_entries": deduplicated_toc
-            }
+    final_result_obj = {
+        "metadata": best_metadata,
+        "toc_entries": deduplicated_toc
+    }
     
-            print("\n\n--- ✅ SUCCESS: COMBINED & PROCESSED FINAL DATA ---")
-            print(json.dumps(final_result_obj, indent=2))
+    print("\n\n--- ✅ SUCCESS: COMBINED & PROCESSED FINAL DATA ---")
+    print(json.dumps(final_result_obj, indent=2))
     
-            return final_result_obj
+    return final_result_obj
+
+## This main function is for standalone testing of this script.
+## In the FastAPI app, you will import and call `process_pdf` directly.
+async def main():
+    if len(sys.argv) < 2:
+        print("Usage: python toc_logic.py <path_to_pdf>")
+        sys.exit(1)
+        
+    pdf_path = sys.argv[1]
+    if not os.path.exists(pdf_path):
+        print(f"Error: File not found at {pdf_path}")
+        sys.exit(1)
+        
+    await process_pdf(pdf_path)
+
+if __name__ == "__main__":
+    asyncio.run(main())
