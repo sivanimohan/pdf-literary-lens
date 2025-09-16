@@ -143,51 +143,54 @@ async def process_pdf(pdf_path):
     image_paths = sorted([str(p) for p in output_dir.glob("*.jpg")])
     print(f"Successfully converted {len(image_paths)} pages.")
 
-    # Use Gemini 2.5 Flash Lite only
-    model = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
+    # --- Pass 1: Discovery Pass with Flash Lite Model ---
+    print("\n--- Starting Pass 1: Discovery (using gemini-2.5-flash-lite) ---")
+    model_flash = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
     chunk_size = 5
-    all_results_str = []
-    toc_found = False
+    discovery_tasks = []
+    for i in range(0, len(image_paths), chunk_size):
+        chunk_paths = image_paths[i:i + chunk_size]
+        discovery_tasks.append(get_structured_data_from_images(model_flash, chunk_paths))
+    discovery_results = await asyncio.gather(*discovery_tasks)
 
-    total_pages_to_scan = 20
-    pages_per_batch = 10
-    num_batches = (total_pages_to_scan + pages_per_batch - 1) // pages_per_batch
-    for i in range(num_batches):
-        start_page_index = i * pages_per_batch
-        end_page_index = start_page_index + pages_per_batch
-        batch_paths = image_paths[start_page_index:end_page_index]
-        if not batch_paths: break
-        print(f"\n--- Processing Batch {i+1} (Pages {start_page_index+1}-{min(end_page_index, len(image_paths))}) ---")
-        batch_chunks = [batch_paths[j:j + chunk_size] for j in range(0, len(batch_paths), chunk_size)]
-        tasks = [get_structured_data_from_images(model, chunk) for chunk in batch_chunks]
-        batch_results = await asyncio.gather(*tasks)
-        all_results_str.extend(batch_results)
-
+    toc_page_indices = set()
+    all_parsed_results_pass1 = []
+    for i, res_str in enumerate(discovery_results):
         try:
-            toc_found_in_batch = any(json.loads(res).get("toc_entries") for res in batch_results if "error" not in res.lower() and res.strip())
-            if toc_found_in_batch: toc_found = True
-            last_result_obj = json.loads(batch_results[-1]) if batch_results[-1].strip() else {}
-            is_last_chunk_empty = not last_result_obj.get("toc_entries")
-            if toc_found and is_last_chunk_empty:
-                print("\n--- ToC appears to have ended. Stopping scan early. ---")
-                break
+            res_json = json.loads(res_str)
+            all_parsed_results_pass1.append(res_json)
+            if res_json.get("toc_entries"):
+                start_index = i * chunk_size
+                end_index = start_index + chunk_size
+                for page_idx in range(start_index, min(end_index, len(image_paths))):
+                    toc_page_indices.add(page_idx)
         except (json.JSONDecodeError, TypeError):
+            print(f"Warning: Could not parse JSON from discovery chunk {i+1}.")
             continue
 
-    print("\n--- Individual Chunk Results (for debugging) ---")
-    for i, result in enumerate(all_results_str):
-        print(f"\n[Result from Page Chunk {i*chunk_size+1}-{ (i+1)*chunk_size }]:\n{result}")
+    if not toc_page_indices:
+        print("\n--- Discovery Pass found no pages with TOC entries. Aborting. ---")
+        return None
 
-    all_parsed_results = []
-    for res_str in all_results_str:
-        try:
-            all_parsed_results.append(json.loads(res_str))
-        except (json.JSONDecodeError, TypeError):
-            continue
+    print(f"\n--- Discovery Pass identified {len(toc_page_indices)} potential TOC pages. ---")
 
+    # --- Pass 2: Verification Pass with Pro Model ---
+    print("\n--- Starting Pass 2: Verification (using gemini-2.5-pro) ---")
+    model_pro = genai.GenerativeModel(model_name="gemini-2.5-pro")
+    targeted_image_paths = [image_paths[i] for i in sorted(list(toc_page_indices))]
+    final_result_str = await get_structured_data_from_images(model_pro, targeted_image_paths)
+
+    try:
+        final_data = json.loads(final_result_str)
+    except (json.JSONDecodeError, TypeError):
+        print("\n--- ❌ FINAL RESULT ---")
+        print("ERROR: Failed to parse the final JSON output from the Pro model.")
+        return None
+
+    print("\n--- Consolidating final results ---")
     best_metadata = {}
     max_filled_fields = -1
-    for result in all_parsed_results:
+    for result in all_parsed_results_pass1:
         metadata = result.get("metadata", {})
         if metadata:
             filled_count = sum(1 for value in metadata.values() if value is not None)
@@ -195,34 +198,15 @@ async def process_pdf(pdf_path):
                 max_filled_fields = filled_count
                 best_metadata = metadata
 
-    final_combined_toc = []
-    for result in all_parsed_results:
-        final_combined_toc.extend(result.get("toc_entries", []))
-
-    if not final_combined_toc and max_filled_fields <= 0:
-        return None
-
-
-    # Convert all page_number values to int before sorting, skip if not possible
-    filtered_toc = []
-    for item in final_combined_toc:
-        page = item.get('page_number')
-        if page is not None:
-            try:
-                item['page_number'] = int(page)
-                filtered_toc.append(item)
-            except (ValueError, TypeError):
-                continue  # skip if page_number is not convertible to int
-    filtered_toc.sort(key=lambda item: item['page_number'])
-
+    final_combined_toc = final_data.get("toc_entries", [])
+    final_combined_toc.sort(key=lambda item: item.get('page_number', 0))
     deduplicated_toc = []
     seen_titles = set()
-    for item in filtered_toc:
+    for item in final_combined_toc:
         title = item.get('chapter_title', '').strip().lower()
         if title and title not in seen_titles:
             deduplicated_toc.append(item)
             seen_titles.add(title)
-
     final_result = {
         "metadata": best_metadata,
         "toc_entries": deduplicated_toc
@@ -260,23 +244,3 @@ async def main(pdf_path):
     print("Saved log to lsd_psychotherapy_toc_gemini_flashlite.log.txt")
 
 ## The main() and CLI logic is only for standalone use. For FastAPI, process_pdf must be importable at top-level.
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-# --- USER NOTE ---
-# Although I still need to pay you for the last work you did with the chapter stuff. And I still need to do some touches on the logic to try to complete it. I was hoping I'd have time I haven't yet, so maybe see if you can do it. 
-#
-# What I had in mind was this. Right now the model is struggling to piece everything together. When we do the initial analysis, we get a list of chapters for each page. Rather than just them sending that off to the final LLM call with the java headings, we do an intermediate step.
-#
-# So rather than:
-# 1) Get chapter list from the PDF
-# 2) Send this + java headings to the LLM
-#
-# We introduce a intermediate step. 
-#
-# So after, 1) Get chapter list from the PDF:
-#
-# With this, we now know what pages contain chapters. So now we repeat this process, but ONLY do the pages that DO contains chapters, and now we do it with a stronger model, 2.5 pro. 
-#
-# Now we get another chapter list, just like before, but because it's a smaller dataset and with a stronger model, hopefully that will be more accurate and wont give as much trouble.
