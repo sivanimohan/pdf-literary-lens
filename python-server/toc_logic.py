@@ -143,6 +143,18 @@ async def process_pdf(pdf_path):
     image_paths = sorted([str(p) for p in output_dir.glob("*.jpg")])
     print(f"Successfully converted {len(image_paths)} pages.")
 
+    # --- Metadata Extraction from First 15 Pages ---
+    print("\n--- Extracting metadata (title, author) from first 15 pages ---")
+    metadata_image_paths = image_paths[:15]
+    model_metadata = genai.GenerativeModel(model_name="gemini-2.5-pro")
+    metadata_result_str = await get_structured_data_from_images(model_metadata, metadata_image_paths)
+    try:
+        metadata_result = json.loads(metadata_result_str)
+        best_metadata = metadata_result.get("metadata", {})
+    except (json.JSONDecodeError, TypeError):
+        print("Warning: Could not parse metadata JSON from first 15 pages.")
+        best_metadata = {}
+
     # --- Pass 1: Discovery Pass with Flash Lite Model ---
     print("\n--- Starting Pass 1: Discovery (using gemini-2.5-flash-lite) ---")
     model_flash = genai.GenerativeModel(model_name="gemini-2.5-flash-lite")
@@ -188,15 +200,16 @@ async def process_pdf(pdf_path):
         return None
 
     print("\n--- Consolidating final results ---")
-    best_metadata = {}
-    max_filled_fields = -1
-    for result in all_parsed_results_pass1:
-        metadata = result.get("metadata", {})
-        if metadata:
-            filled_count = sum(1 for value in metadata.values() if value is not None)
-            if filled_count > max_filled_fields:
-                max_filled_fields = filled_count
-                best_metadata = metadata
+    # Use metadata from first 15 pages, fallback to best from pass 1 if missing
+    if not best_metadata:
+        max_filled_fields = -1
+        for result in all_parsed_results_pass1:
+            metadata = result.get("metadata", {})
+            if metadata:
+                filled_count = sum(1 for value in metadata.values() if value is not None)
+                if filled_count > max_filled_fields:
+                    max_filled_fields = filled_count
+                    best_metadata = metadata
 
     final_combined_toc = final_data.get("toc_entries", [])
     final_combined_toc.sort(key=lambda item: item.get('page_number', 0))
