@@ -140,16 +140,21 @@ Instructions:
             )
             text = response.text
             # Post-process: try to extract valid JSON if malformed
-            try:
-                return json.dumps(json.loads(text))
-            except Exception:
+            def repair_json(text):
                 # Attempt to repair: extract first {...} block
                 match = re.search(r'\{.*\}', text, re.DOTALL)
                 if match:
                     try:
-                        return json.dumps(json.loads(match.group(0)))
+                        return json.loads(match.group(0))
                     except Exception:
                         pass
+                return None
+            try:
+                return json.dumps(json.loads(text))
+            except Exception:
+                repaired = repair_json(text)
+                if repaired:
+                    return json.dumps(repaired)
                 print(f"[Warning] Could not parse JSON from LLM output on attempt {attempt+1}.")
                 if attempt + 1 == max_retries:
                     return '{"error": "API call failed or malformed JSON"}'
@@ -180,9 +185,16 @@ async def process_pdf(pdf_path):
     metadata_image_paths = image_paths[:15]
     model_metadata = genai.GenerativeModel(model_name="gemini-2.5-pro")
     metadata_result_str = await get_structured_data_from_images(model_metadata, metadata_image_paths)
+    def clean_metadata(md):
+        # If title/author is missing or 'Unknown', fallback to OCR or aggregation
+        if not md or md.get('book_title') in [None, '', 'Unknown Title']:
+            md['book_title'] = None
+        if not md or not md.get('authors') or md.get('authors') == ['Unknown Author']:
+            md['authors'] = None
+        return md
     try:
         metadata_result = json.loads(metadata_result_str)
-        best_metadata = metadata_result.get("metadata", {})
+        best_metadata = clean_metadata(metadata_result.get("metadata", {}))
     except (json.JSONDecodeError, TypeError):
         print("Warning: Could not parse metadata JSON from first 15 pages.")
         best_metadata = {}
@@ -224,6 +236,20 @@ async def process_pdf(pdf_path):
     targeted_image_paths = [image_paths[i] for i in sorted(list(toc_page_indices))]
     final_result_str = await get_structured_data_from_images(model_pro, targeted_image_paths)
 
+    def fix_toc_fields(toc):
+        filtered = []
+        non_chapter_terms = ["index", "notes", "acknowledgments", "references", "bibliography", "further reading"]
+        for item in toc:
+            # Fix field typo
+            if 'page_page' in item:
+                item['page_number'] = item.pop('page_page')
+            title = item.get('chapter_title', '').strip().lower()
+            # Filter out non-chapter entries
+            if any(term in title for term in non_chapter_terms):
+                continue
+            filtered.append(item)
+        return filtered
+
     try:
         final_data = json.loads(final_result_str)
     except (json.JSONDecodeError, TypeError):
@@ -237,6 +263,7 @@ async def process_pdf(pdf_path):
         max_filled_fields = -1
         for result in all_parsed_results_pass1:
             metadata = result.get("metadata", {})
+            metadata = clean_metadata(metadata)
             if metadata:
                 filled_count = sum(1 for value in metadata.values() if value is not None)
                 if filled_count > max_filled_fields:
@@ -244,6 +271,7 @@ async def process_pdf(pdf_path):
                     best_metadata = metadata
 
     final_combined_toc = final_data.get("toc_entries", [])
+    final_combined_toc = fix_toc_fields(final_combined_toc)
     final_combined_toc.sort(key=lambda item: item.get('page_number', 0))
     deduplicated_toc = []
     seen_titles = set()
