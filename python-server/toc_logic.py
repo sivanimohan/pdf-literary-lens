@@ -80,28 +80,44 @@ async def get_structured_data_from_images(model, image_paths):
     print(f"Processing a chunk of {len(image_paths)} images...")
     structured_prompt = """
 Analyze the following book pages to extract metadata and the main table of contents.
-Your response will be programmatically constrained to the JSON schema provided.
+Your response MUST be a single valid JSON object matching the schema below. Do NOT include any markdown, explanations, or extra text. If you cannot extract a field, set its value to null.
 
-The JSON object you return has two top-level keys: \"metadata\" and \"toc_entries\".
+Schema Example (CORRECT):
+{
+    "metadata": {
+        "book_title": "Example Title",
+        "authors": ["Author One", "Author Two"],
+        "publishing_house": "Publisher Name",
+        "publishing_year": 2020
+    },
+    "toc_entries": [
+        {
+            "chapter_title": "Chapter 1: Introduction",
+            "chapter_number": 1,
+            "page_number": 5,
+            "reference_boolean": false
+        },
+        {
+            "chapter_title": "Bibliography",
+            "chapter_number": null,
+            "page_number": 200,
+            "reference_boolean": true
+        }
+    ]
+}
 
-1.  **\"metadata\"**: This object contains the book's metadata.
-    * \"book_title\": The full title of the book.
-    * \"authors\": A list of all author names.
-    * \"publishing_house\": The name of the publisher.
-    * \"publishing_year\": The integer year of publication.
-    * If any metadata field is not found on the pages, its value MUST be null.
+Schema Example (INCORRECT):
+```json
+{ "metadata": ... } // markdown or code block
+Explanation: ... // extra text
+```
 
-2.  **\"toc_entries\"**: This is a JSON array containing ONLY THE MAIN, TOP-LEVEL CHAPTERS.
-    * **CRITICAL**: You MUST IGNORE indented sub-chapters. Main chapters are typically not indented and have larger page gaps between them. Do not include sub-chapters in the list.
-    * Each object in the array represents one main chapter and MUST have these four keys:
-        * \"chapter_title\": The string name of the chapter.
-        * \"chapter_number\": The integer chapter number. ONLY include this if the number is explicitly written (e.g., \"1.\", \"Chapter 5\"). You MUST NOT invent, assume, or count chapter numbers. If no number is written, the value MUST be null.
-        * \"page_number\": The integer page number.
-        * \"reference_boolean\": A boolean value. It MUST be `true` ONLY for sections explicitly titled \"Bibliography\" or \"References\". For all other entries (including \"Index\", \"Appendix\", \"Coda\", etc.), it MUST be `false`.
-
-If no table of contents entries are found, \"toc_entries\" MUST be an empty list [].
-
-IMPORTANT: Return ONLY valid JSON. Do NOT include any markdown, explanations, or extra text. The output must be a single valid JSON object and nothing else.
+Instructions:
+- Return ONLY valid JSON, no markdown or extra text.
+- If you cannot extract a field, set its value to null.
+- If no table of contents entries are found, "toc_entries" MUST be an empty list [].
+- Do NOT invent chapter numbers; only include if explicitly written.
+- For "reference_boolean", set true ONLY for "Bibliography" or "References".
 """
 
     prompt_parts = [structured_prompt]
@@ -113,6 +129,7 @@ IMPORTANT: Return ONLY valid JSON. Do NOT include any markdown, explanations, or
         response_schema=ExtractionResult
     )
 
+    import re
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -121,7 +138,22 @@ IMPORTANT: Return ONLY valid JSON. Do NOT include any markdown, explanations, or
                 contents=prompt_parts,
                 generation_config=generation_config
             )
-            return response.text
+            text = response.text
+            # Post-process: try to extract valid JSON if malformed
+            try:
+                return json.dumps(json.loads(text))
+            except Exception:
+                # Attempt to repair: extract first {...} block
+                match = re.search(r'\{.*\}', text, re.DOTALL)
+                if match:
+                    try:
+                        return json.dumps(json.loads(match.group(0)))
+                    except Exception:
+                        pass
+                print(f"[Warning] Could not parse JSON from LLM output on attempt {attempt+1}.")
+                if attempt + 1 == max_retries:
+                    return '{"error": "API call failed or malformed JSON"}'
+                await asyncio.sleep(2)
         except Exception as e:
             error_str = str(e)
             if "Connection reset by peer" in error_str or "Deadline Exceeded" in error_str:
