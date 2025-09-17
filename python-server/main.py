@@ -87,19 +87,15 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
     print("[DEBUG] Formatted TOC for final prompt (should NOT include page_number):", formatted_toc_for_prompt)
 
     prompt = (
-        f"Here is a list of chapters from this book: {book_title}\n\n[TOC LIST]\n"
+        f"You are given a list of chapters from the book '{book_title}'. Your job is to match each chapter to its starting page number using the dataset below.\n\n"
+        "[TOC LIST]\n"
         + json.dumps(formatted_toc_for_prompt, indent=2)
-        + "\nNow your job is to look in the dataset below, and find the page number where each chapter starts. "
-        "If you cannot confidently match a chapter to a heading, include it in the output with its original page number from the TOC. "
-        "Ignore the noise, just focus on the chapter titles and assign the best possible page number. "
-        "Be mindful that:\n\n"
-        "- Minor differences in wording are OK, as long as it's clearly referring to the same chapter.\n\n"
-        "- If a chapter name is divided across 2 entries, treat them as one chapter.\n\n"
-        "- Where there is ambiguity, make reasonable guesses, but do not drop chapters. If you cannot match, use the original page number.\n\n"
-        "Return the result as a JSON list like this: [{\"chapter_title\": \"...\", \"page_number\": ...}, ...]. "
-        "Do NOT use Markdown or plain text or bullet lists.\n\n"
-        "[JAVA HEADINGS LIST]\n"
+        + "\n\n[JAVA HEADINGS LIST]\n"
         + str(java_headings)
+        + "\n\nReturn ONLY a valid JSON array of objects, with no markdown, no explanations, and no extra text. Each object must have these keys: 'chapter_title' (string), 'page_number' (integer).\n\n"
+        "Example output:\n"
+        "[\n  {\"chapter_title\": \"Introduction\", \"page_number\": 7},\n  {\"chapter_title\": \"Wisdom, Gods and Goddesses\", \"page_number\": 13}\n]\n\n"
+        "Do NOT use triple backticks, markdown, or any text before or after the JSON."
     )
     headers = {"Content-Type": "application/json"}
     data = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -112,17 +108,28 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
             candidates = result.get("candidates", [])
             if candidates:
                 text_response = candidates[0]["content"]["parts"][0]["text"]
+                # Strip triple backticks and 'json' if present
+                cleaned = text_response.strip()
+                if cleaned.startswith('```json'):
+                    cleaned = cleaned[len('```json'):].strip()
+                if cleaned.startswith('```'):
+                    cleaned = cleaned[len('```'):].strip()
+                if cleaned.endswith('```'):
+                    cleaned = cleaned[:-3].strip()
                 try:
-                    final_chapters = json.loads(text_response)
-                    if isinstance(final_chapters, list):
+                    final_chapters = json.loads(cleaned)
+                    if isinstance(final_chapters, list) and final_chapters:
                         return final_chapters
                 except Exception:
-                    print("[DEBUG] Gemini match response not valid JSON:", text_response)
+                    print("[DEBUG] Gemini match response not valid JSON:", cleaned)
                     # Try fallback parsing
-                    final_chapters = parse_chapter_list(text_response)
+                    final_chapters = parse_chapter_list(cleaned)
                     if final_chapters:
                         print("[DEBUG] Parsed chapter list from markdown format.")
-                    return final_chapters
+                        return final_chapters
+                # Fallback: return original TOC if Gemini output is empty or invalid
+                print("[DEBUG] Gemini output empty or invalid, returning original TOC.")
+                return toc
         return []
     except Exception as e:
         print("[DEBUG] Gemini match API exception:", e)
