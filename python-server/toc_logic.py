@@ -199,20 +199,12 @@ async def process_pdf(pdf_path: str):
     # Get the high-quality TOC from the Verification Pass
     final_combined_toc = final_data.get("toc_entries", [])
 
-    # Sort and deduplicate the final TOC
+    # Relaxed: Accept all entries from LLM output, no deduplication or filtering
     final_combined_toc.sort(key=lambda item: item.get('page_number', 0))
-
-    deduplicated_toc = []
-    seen_titles = set()
-    for item in final_combined_toc:
-        title = item.get('chapter_title', '').strip().lower()
-        if title and title not in seen_titles:
-            deduplicated_toc.append(item)
-            seen_titles.add(title)
 
     final_result_obj = {
         "metadata": best_metadata,
-        "toc_entries": deduplicated_toc
+        "toc_entries": final_combined_toc
     }
 
     print("\n\n--- ✅ SUCCESS: COMBINED & PROCESSED FINAL DATA ---")
