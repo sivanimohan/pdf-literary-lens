@@ -145,7 +145,15 @@ async def extract_toc_endpoint(file: UploadFile = File(...)):
         # Call the new TOC extraction logic
         result = await get_toc_from_new_logic(tmp_path)
         toc = result["toc_entries"] if result and "toc_entries" in result else []
-        return JSONResponse(content={"toc": toc})
+        # Only include chapter_title and reference_boolean for each entry
+        filtered_toc = [
+            {
+                "chapter_title": entry.get("chapter_title"),
+                "reference_boolean": entry.get("reference_boolean")
+            }
+            for entry in toc
+        ]
+        return JSONResponse(content={"toc": filtered_toc})
     except Exception as e:
         return JSONResponse(content={"error": str(e)})
     finally:
