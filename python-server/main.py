@@ -73,28 +73,25 @@ def get_java_headings(pdf_path):
 def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
 
-        # --- Filtering, Restructuring, Sorting ---
-        grouped_headings = {}
-        for heading in headings_data:
-            title = heading.get("title", "")
-            # Filter: Only keep titles with at least one alphabetic character
-            if any(char.isalpha() for char in title):
-                page_num_key = str(heading["pageNumber"])
-                if page_num_key not in grouped_headings:
-                    grouped_headings[page_num_key] = []
-                grouped_headings[page_num_key].append({
-                    "title": title,
-                    "level": heading.get("level")
-                })
-        # Sort by page number
-        sorted_grouped_headings = dict(sorted(grouped_headings.items(), key=lambda item: int(item[0])))
-        # Output to file
-        output_filename = f"{os.path.splitext(pdf_filename)[0]}_java_cleaned.json"
-        with open(output_filename, 'w', encoding='utf-8') as outfile:
-            json.dump(sorted_grouped_headings, outfile, indent=2, ensure_ascii=False)
-        total_headings_count = sum(len(v) for v in sorted_grouped_headings.values())
-        print(f"Filtered and restructured Java headings saved to {output_filename}")
-        print(f"Found {total_headings_count} potential headings.")
+    # --- Filtering, Restructuring, Sorting ---
+    grouped_headings = {}
+    for heading in java_headings:
+        title = heading.get("title", "")
+        # Filter: Only keep titles with at least one alphabetic character
+        if any(char.isalpha() for char in title):
+            page_num_key = str(heading["pageNumber"])
+            if page_num_key not in grouped_headings:
+                grouped_headings[page_num_key] = []
+            grouped_headings[page_num_key].append({
+                "title": title,
+                "level": heading.get("level")
+            })
+    # Sort by page number
+    sorted_grouped_headings = dict(sorted(grouped_headings.items(), key=lambda item: int(item[0])))
+    # Output to file
+    # pdf_filename is not defined, so skip output_filename and file writing
+    total_headings_count = sum(len(v) for v in sorted_grouped_headings.values())
+    print(f"Found {total_headings_count} potential headings.")
     print("[DEBUG] Raw TOC passed to final matching step:", toc)
     formatted_toc_for_prompt = [
         {
