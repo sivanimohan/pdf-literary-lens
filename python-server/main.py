@@ -74,8 +74,13 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
 
     # --- Filtering, Restructuring, Sorting ---
+    if not isinstance(java_headings, list):
+        print("[ERROR] Java headings is not a list. Value:", java_headings)
+        return []
     grouped_headings = {}
     for heading in java_headings:
+        if not isinstance(heading, dict):
+            continue
         title = heading.get("title", "")
         # Filter: Only keep titles with at least one alphabetic character
         if any(char.isalpha() for char in title):
@@ -88,8 +93,6 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
             })
     # Sort by page number
     sorted_grouped_headings = dict(sorted(grouped_headings.items(), key=lambda item: int(item[0])))
-    # Output to file
-    # pdf_filename is not defined, so skip output_filename and file writing
     total_headings_count = sum(len(v) for v in sorted_grouped_headings.values())
     print(f"Found {total_headings_count} potential headings.")
     print("[DEBUG] Raw TOC passed to final matching step:", toc)
