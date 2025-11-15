@@ -17,61 +17,94 @@ PDF Literary Lens is a repository focused on analyzing and extracting structured
 - `/python-server` - Auxiliary code or microservice, probably for analysis or API endpoints.
 - `/final_analysis` - Outputs and results of semantic and structural analyses.
 - `detected_headings.json`, `final_book_analysis.json` - Exported data about detected chapters/headings and aggregated book analysis.
+# PDF Literary Lens
 
-## Usage
+PDF Literary Lens extracts and analyzes structured literary data from PDF books. It provides tools and workflows to detect chapters/headings, collect book metadata, and run semantic analyses on extracted text. The project began as a fork of [kongole/stirling-pdf-proxy](https://github.com/kongole/stirling-pdf-proxy) and is tailored for literary/text-mining use cases.
 
-### Prerequisites
+## Key Features
 
-- Java (project appears Java-based)
-- [Maven](https://maven.apache.org/) (`pom.xml` is provided)
-- Python (for scripts in the `python-server` directory or additional tools)
-- Docker (optional, Dockerfile provided for containerized execution)
+- Chapter detection and heading extraction (see `detected_headings.json`).
+- Structured book metadata extraction (outputs in `bookdata/` and `final_book_analysis.json`).
+- Higher-level semantic/structural analysis (results in `final_analysis/`).
+- Auxiliary Python server for analysis or API integration (`python-server/`).
+- Containerization support via `Dockerfile` and a Railway deployment guide.
 
-### Quick Start
+## Quick Start
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/sivanimohan/pdf-literary-lens.git
-   cd pdf-literary-lens
-   ```
+Prerequisites: Java (OpenJDK 11+ recommended), Maven, Python 3.8+, and Docker (optional).
 
-2. **Build and Run Java Application**
-   ```bash
-   mvn package
-   java -jar target/your-app.jar
-   ```
+1. Clone the repo
 
-3. **Run Chapter Extraction Script**
-   ```bash
-   ./run_chapter_extraction.bat
-   ```
+```bash
+git clone https://github.com/sivanimohan/pdf-literary-lens.git
+cd pdf-literary-lens
+```
 
-4. **Deploying (Railway example)**
-   - See `railway_deploy_guide.txt` for full cloud deployment instructions.
+2. Build the Java project with Maven
 
-5. **Python Server (Optional)**
-   - Further instructions may be found in the `/python-server` directory if you wish to use or extend the API capabilities.
+```bash
+mvn -q package
+# After build, run the produced JAR (replace with the actual artifact name under target/)
+java -jar target/*.jar
+```
 
-## Data and Outputs
+3. Run the Python server (optional)
 
-- Book data (in `bookdata`), detected headings (`detected_headings.json`), and analysis results can be used for downstream literary or text mining applications.
+```bash
+cd python-server
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
 
-## Contributing
+4. Use Docker (optional)
 
-Since this project is a fork and highly specialized for literary PDF analysis, contributions are welcome especially in areas such as:
-- Improving chapter/heading detection.
-- Enhancements for semantic analysis.
-- Integrations with other text mining tools.
+```bash
+# Build image in repository root
+docker build -t pdf-literary-lens .
+# Run container (adjust port as needed)
+docker run --rm -p 8080:8080 pdf-literary-lens
+```
 
-## License
+5. Run chapter extraction (Windows batch included)
 
-No license is specified; consult the repo owner if in doubt regarding use.
+```bash
+# Windows
+./run_chapter_extraction.bat
+# For Linux/macOS: there may be an equivalent shell script or run the relevant Java/Python command directly.
+```
+
+## Project Layout
+
+- `src/` — Java source and application code (see `pom.xml`).
+- `python-server/` — Small Python service for supplementary analysis / API (`main.py`, `requirements.txt`).
+- `bookdata/` — Raw or intermediate extracted book data.
+- `detected_headings.json` — Example output of heading detection.
+- `final_book_analysis.json` and `final_analysis/` — Aggregated/semantic analysis outputs.
+- `Dockerfile`, `railway_deploy_guide.txt` — Containerization and deployment notes.
+
+## How to Contribute
+
+- Report issues and feature requests via GitHub Issues.
+- Open pull requests with focused changes and tests/examples where applicable.
+- If adding code, follow the existing style: Java for core app, Python for scripting/services.
+
+If you'd like help improving detection accuracy or adding dataset examples, open an issue describing the input PDFs and desired output.
+
+## Notes on Licensing
+
+No license file is included in the repository. If you plan to reuse or redistribute code, contact the repository owner or add a license via a pull request.
 
 ## Attribution
 
-Forked from [kongole/stirling-pdf-proxy](https://github.com/kongole/stirling-pdf-proxy).
+Forked and adapted from [kongole/stirling-pdf-proxy](https://github.com/kongole/stirling-pdf-proxy).
 
 ---
 
-**Primary Language:** Java  
-Other technologies: Python for scripting/server and various configuration/text data files.
+If you'd like, I can also:
+
+- Add badges (build / license / codecov) to the top of this README.
+- Create a short `CONTRIBUTING.md` with a development checklist.
+- Add a minimal shell script for chapter extraction on Unix-like systems.
+
